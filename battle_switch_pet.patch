@@ -1,0 +1,39 @@
+--- a/golang_version/internal/handlers/handlers.go
++++ b/golang_version/internal/handlers/handlers.go
+@@ -4333,19 +4333,29 @@
+ 		battle.PlayerHP = 0
+ 	}
+ }
+ 
++	// 保存HP状态用于构建AttackValue
++	playerHPAfterAttack := battle.PlayerHP + enemyDamage // 玩家攻击后、敌人反击前的HP
++	if enemyDamage == 0 {
++		playerHPAfterAttack = battle.PlayerHP // 如果敌人没反击，两个值相同
++	}
++	playerHPAfterCounter := battle.PlayerHP // 敌人反击后的HP
++
+ 	// PvP 时需用对方 userID 填第二个 AttackValue，客户端才能正确匹配"对方"血条与图标
+ 	opponentUID := battle.OpponentUserID
+ 	ctx.GameServer.BattleMu.Unlock()
+ 
+ 	// 构建 2505 响应：两个 AttackValue（玩家攻击 + 敌人/对方反击）
+ 	body := make([]byte, 0, 160)
+-	// 玩家攻击（我方）
+-	body = append(body, buildAttackValue(uint32(ctx.UserID), skillID, 1, damage, 0, int32(battle.PlayerHP), battle.PlayerMaxHP, 0, 0, 0)...)
+-	// 敌人/对方反击：PvP 时填对方 userID，客户端用此匹配"对方"精灵显示
++	// 第一个AttackValue：玩家攻击的结果（此时玩家HP还没被敌人反击扣除）
++	body = append(body, buildAttackValue(uint32(ctx.UserID), skillID, 1, damage, 0, int32(playerHPAfterAttack), battle.PlayerMaxHP, 0, 0, 0)...)
++	// 第二个AttackValue：敌人反击的结果（此时玩家HP已被敌人反击扣除）
+ 	enemyUserID := uint32(0)
+ 	if opponentUID != 0 {
+ 		enemyUserID = uint32(opponentUID)
+ 	}
+ 	if battle.EnemyHP > 0 {
+-		body = append(body, buildAttackValue(enemyUserID, enemySkillID, 1, enemyDamage, 0, int32(battle.EnemyHP), battle.EnemyMaxHP, 0, 0, 0)...)
++		// 敌人反击：显示敌人的攻击和玩家受到反击后的HP
++		body = append(body, buildAttackValue(enemyUserID, enemySkillID, 1, enemyDamage, 0, int32(playerHPAfterCounter), battle.PlayerMaxHP, 0, 0, 0)...)
+ 	} else {
+-		body = append(body, buildAttackValue(enemyUserID, 0, 0, 0, 0, 0, battle.EnemyMaxHP, 0, 0, 0)...)
++		// 敌人已死亡：不反击
++		body = append(body, buildAttackValue(enemyUserID, 0, 0, 0, 0, int32(playerHPAfterAttack), battle.PlayerMaxHP, 0, 0, 0)...)
+ 	}

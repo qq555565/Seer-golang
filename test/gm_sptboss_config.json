@@ -1,0 +1,584 @@
+{
+  "mapBosses": [
+    {
+      "mapId": 17,
+      "param2": 0,
+      "bossPetId": 42,
+      "level": 35,
+      "hasShield": false
+    },
+    {
+      "mapId": 53,
+      "param2": 0,
+      "bossPetId": 187,
+      "level": 50,
+      "hasShield": false
+    },
+    {
+      "mapId": 15,
+      "param2": 0,
+      "bossPetId": 261,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "mapId": 40,
+      "param2": 0,
+      "bossPetId": 50,
+      "level": 65,
+      "hasShield": false
+    },
+    {
+      "mapId": 59,
+      "param2": 0,
+      "bossPetId": 347,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "mapId": 348,
+      "param2": 3,
+      "bossPetId": 413,
+      "level": 75,
+      "hasShield": false
+    },
+    {
+      "mapId": 348,
+      "param2": 0,
+      "bossPetId": 274,
+      "level": 80,
+      "hasShield": false
+    },
+    {
+      "mapId": 348,
+      "param2": 1,
+      "bossPetId": 391,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "mapId": 348,
+      "param2": 2,
+      "bossPetId": 216,
+      "level": 80,
+      "hasShield": false
+    },
+    {
+      "mapId": 54,
+      "param2": 0,
+      "bossPetId": 261,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "mapId": 21,
+      "param2": 0,
+      "bossPetId": 34,
+      "level": 25,
+      "hasShield": false
+    },
+    {
+      "mapId": 325,
+      "param2": 0,
+      "bossPetId": 264,
+      "level": 60,
+      "hasShield": false
+    },
+    {
+      "mapId": 27,
+      "param2": 0,
+      "bossPetId": 69,
+      "level": 50,
+      "hasShield": false
+    },
+    {
+      "mapId": 419,
+      "param2": 0,
+      "bossPetId": 261,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "mapId": 105,
+      "param2": 0,
+      "bossPetId": 261,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "mapId": 106,
+      "param2": 0,
+      "bossPetId": 88,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "mapId": 16,
+      "param2": 0,
+      "bossPetId": 393,
+      "level": 75,
+      "hasShield": false
+    },
+    {
+      "mapId": 49,
+      "param2": 0,
+      "bossPetId": 113,
+      "level": 75,
+      "hasShield": false
+    },
+    {
+      "mapId": 61,
+      "param2": 0,
+      "bossPetId": 421,
+      "level": 80,
+      "hasShield": false
+    },
+    {
+      "mapId": 314,
+      "param2": 0,
+      "bossPetId": 132,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "mapId": 32,
+      "param2": 0,
+      "bossPetId": 70,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "mapId": 22,
+      "param2": 0,
+      "bossPetId": 34,
+      "level": 25,
+      "hasShield": false
+    },
+    {
+      "mapId": 10,
+      "param2": 0,
+      "bossPetId": 166,
+      "level": 80,
+      "hasShield": false
+    },
+    {
+      "mapId": 60,
+      "param2": 0,
+      "bossPetId": 216,
+      "level": 80,
+      "hasShield": false
+    },
+    {
+      "mapId": 57,
+      "param2": 0,
+      "bossPetId": 216,
+      "level": 80,
+      "hasShield": false
+    },
+    {
+      "mapId": 12,
+      "param2": 1,
+      "bossPetId": 83,
+      "level": 5,
+      "hasShield": false
+    },
+    {
+      "mapId": 12,
+      "param2": 0,
+      "bossPetId": 47,
+      "level": 10,
+      "hasShield": true
+    }
+  ],
+  "sptBosses": [
+    {
+      "sptId": 11,
+      "bossPetId": 216,
+      "rewardPetId": 0,
+      "rewardItemId": 400118,
+      "level": 80,
+      "hasShield": false
+    },
+    {
+      "sptId": 16,
+      "bossPetId": 391,
+      "rewardPetId": 0,
+      "rewardItemId": 400137,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "sptId": 9,
+      "bossPetId": 132,
+      "rewardPetId": 0,
+      "rewardItemId": 400108,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "sptId": 6,
+      "bossPetId": 70,
+      "rewardPetId": 0,
+      "rewardItemId": 400103,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "sptId": 14,
+      "bossPetId": 261,
+      "rewardPetId": 0,
+      "rewardItemId": 400126,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "sptId": 0,
+      "bossPetId": 166,
+      "rewardPetId": 166,
+      "rewardItemId": 0,
+      "level": 80,
+      "hasShield": false
+    },
+    {
+      "sptId": 20,
+      "bossPetId": 4150,
+      "rewardPetId": 0,
+      "rewardItemId": 0,
+      "level": 80,
+      "hasShield": false
+    },
+    {
+      "sptId": 3,
+      "bossPetId": 42,
+      "rewardPetId": 0,
+      "rewardItemId": 400107,
+      "level": 35,
+      "hasShield": false
+    },
+    {
+      "sptId": 10,
+      "bossPetId": 187,
+      "rewardPetId": 0,
+      "rewardItemId": 400114,
+      "level": 50,
+      "hasShield": false
+    },
+    {
+      "sptId": 2,
+      "bossPetId": 34,
+      "rewardPetId": 0,
+      "rewardItemId": 400051,
+      "level": 25,
+      "hasShield": false
+    },
+    {
+      "sptId": 13,
+      "bossPetId": 421,
+      "rewardPetId": 0,
+      "rewardItemId": 400139,
+      "level": 80,
+      "hasShield": false
+    },
+    {
+      "sptId": 12,
+      "bossPetId": 264,
+      "rewardPetId": 0,
+      "rewardItemId": 400125,
+      "level": 60,
+      "hasShield": false
+    },
+    {
+      "sptId": 4,
+      "bossPetId": 50,
+      "rewardPetId": 0,
+      "rewardItemId": 400101,
+      "level": 65,
+      "hasShield": false
+    },
+    {
+      "sptId": 5,
+      "bossPetId": 69,
+      "rewardPetId": 0,
+      "rewardItemId": 400102,
+      "level": 50,
+      "hasShield": false
+    },
+    {
+      "sptId": 1,
+      "bossPetId": 47,
+      "rewardPetId": 46,
+      "rewardItemId": 0,
+      "level": 10,
+      "hasShield": true
+    },
+    {
+      "sptId": 19,
+      "bossPetId": 300,
+      "rewardPetId": 0,
+      "rewardItemId": 400047,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "sptId": 17,
+      "bossPetId": 347,
+      "rewardPetId": 0,
+      "rewardItemId": 400127,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "sptId": 8,
+      "bossPetId": 113,
+      "rewardPetId": 0,
+      "rewardItemId": 400105,
+      "level": 75,
+      "hasShield": false
+    },
+    {
+      "sptId": 15,
+      "bossPetId": 274,
+      "rewardPetId": 0,
+      "rewardItemId": 400136,
+      "level": 80,
+      "hasShield": false
+    },
+    {
+      "sptId": 0,
+      "bossPetId": 413,
+      "rewardPetId": 0,
+      "rewardItemId": 0,
+      "level": 75,
+      "hasShield": false
+    },
+    {
+      "sptId": 7,
+      "bossPetId": 88,
+      "rewardPetId": 0,
+      "rewardItemId": 400104,
+      "level": 70,
+      "hasShield": false
+    },
+    {
+      "sptId": 18,
+      "bossPetId": 393,
+      "rewardPetId": 0,
+      "rewardItemId": 0,
+      "level": 75,
+      "hasShield": false
+    }
+  ],
+  "traits": {
+    "statusImmune": [
+      216,
+      264,
+      261,
+      70
+    ],
+    "statDropImmune": [
+      391,
+      88,
+      113,
+      132,
+      216,
+      261,
+      274
+    ],
+    "sameLifeDeathImmune": [
+      274,
+      391,
+      70,
+      132,
+      216,
+      261
+    ],
+    "infinitePP": [
+      261,
+      132,
+      70,
+      187,
+      264
+    ],
+    "firstStrike": [
+      70,
+      261
+    ],
+    "priorityBonus": [
+      261,
+      70
+    ],
+    "halfHPOneShot": [
+      187
+    ],
+    "damageTakenMultiplier": [
+      {
+        "petId": 187,
+        "mult": 10
+      }
+    ]
+  },
+  "puniSeals": [
+    {
+      "doorIndex": 1,
+      "name": "虚无",
+      "hp": 7000,
+      "rewardItemId": 400651,
+      "playerAccuracyMod": -6,
+      "enemyAtkMod": 2,
+      "enemySpAtkMod": 2,
+      "elementOnlyTypes": null,
+      "energyDamageLimit": 0,
+      "lifeHealPerTurn": 0,
+      "cycleHPBars": 0,
+      "eternalDamageReduction": false,
+      "holyStatDropImmune": false,
+      "trueFormLives": null
+    },
+    {
+      "doorIndex": 2,
+      "name": "元素",
+      "hp": 8000,
+      "rewardItemId": 400652,
+      "playerAccuracyMod": 0,
+      "enemyAtkMod": 0,
+      "enemySpAtkMod": 0,
+      "elementOnlyTypes": [
+        12,
+        13
+      ],
+      "energyDamageLimit": 0,
+      "lifeHealPerTurn": 0,
+      "cycleHPBars": 0,
+      "eternalDamageReduction": false,
+      "holyStatDropImmune": false,
+      "trueFormLives": null
+    },
+    {
+      "doorIndex": 3,
+      "name": "能量",
+      "hp": 9000,
+      "rewardItemId": 400653,
+      "playerAccuracyMod": 0,
+      "enemyAtkMod": 0,
+      "enemySpAtkMod": 0,
+      "elementOnlyTypes": null,
+      "energyDamageLimit": 100,
+      "lifeHealPerTurn": 0,
+      "cycleHPBars": 0,
+      "eternalDamageReduction": false,
+      "holyStatDropImmune": false,
+      "trueFormLives": null
+    },
+    {
+      "doorIndex": 4,
+      "name": "生命",
+      "hp": 10000,
+      "rewardItemId": 400654,
+      "playerAccuracyMod": 0,
+      "enemyAtkMod": 0,
+      "enemySpAtkMod": 0,
+      "elementOnlyTypes": null,
+      "energyDamageLimit": 0,
+      "lifeHealPerTurn": 2000,
+      "cycleHPBars": 0,
+      "eternalDamageReduction": false,
+      "holyStatDropImmune": false,
+      "trueFormLives": null
+    },
+    {
+      "doorIndex": 5,
+      "name": "轮回",
+      "hp": 10000,
+      "rewardItemId": 400655,
+      "playerAccuracyMod": 0,
+      "enemyAtkMod": 0,
+      "enemySpAtkMod": 0,
+      "elementOnlyTypes": null,
+      "energyDamageLimit": 0,
+      "lifeHealPerTurn": 0,
+      "cycleHPBars": 2,
+      "eternalDamageReduction": false,
+      "holyStatDropImmune": false,
+      "trueFormLives": null
+    },
+    {
+      "doorIndex": 6,
+      "name": "永恒",
+      "hp": 12000,
+      "rewardItemId": 400656,
+      "playerAccuracyMod": 0,
+      "enemyAtkMod": 2,
+      "enemySpAtkMod": 2,
+      "elementOnlyTypes": null,
+      "energyDamageLimit": 0,
+      "lifeHealPerTurn": 0,
+      "cycleHPBars": 0,
+      "eternalDamageReduction": true,
+      "holyStatDropImmune": false,
+      "trueFormLives": null
+    },
+    {
+      "doorIndex": 7,
+      "name": "圣洁",
+      "hp": 16000,
+      "rewardItemId": 400657,
+      "playerAccuracyMod": 0,
+      "enemyAtkMod": 2,
+      "enemySpAtkMod": 2,
+      "elementOnlyTypes": null,
+      "energyDamageLimit": 0,
+      "lifeHealPerTurn": 0,
+      "cycleHPBars": 0,
+      "eternalDamageReduction": false,
+      "holyStatDropImmune": true,
+      "trueFormLives": null
+    },
+    {
+      "doorIndex": 8,
+      "name": "真身",
+      "hp": 0,
+      "rewardItemId": 400658,
+      "playerAccuracyMod": 0,
+      "enemyAtkMod": 0,
+      "enemySpAtkMod": 0,
+      "elementOnlyTypes": null,
+      "energyDamageLimit": 0,
+      "lifeHealPerTurn": 0,
+      "cycleHPBars": 0,
+      "eternalDamageReduction": false,
+      "holyStatDropImmune": false,
+      "trueFormLives": [
+        {
+          "lifeIndex": 1,
+          "hp": 7000,
+          "autoHealThreshold": 0
+        },
+        {
+          "lifeIndex": 2,
+          "hp": 8000,
+          "autoHealThreshold": 0
+        },
+        {
+          "lifeIndex": 3,
+          "hp": 9000,
+          "autoHealThreshold": 0
+        },
+        {
+          "lifeIndex": 4,
+          "hp": 12000,
+          "autoHealThreshold": 0
+        },
+        {
+          "lifeIndex": 5,
+          "hp": 20000,
+          "autoHealThreshold": 0
+        },
+        {
+          "lifeIndex": 6,
+          "hp": 65000,
+          "autoHealThreshold": 1000
+        }
+      ]
+    }
+  ]
+}

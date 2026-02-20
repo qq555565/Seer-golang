@@ -1,0 +1,17 @@
+编译：
+  在 golang_version 目录下双击 build.bat；
+  或在当前目录执行：
+  go build -ldflags "-s -w" -o output/gameserver.exe ./cmd/gameserver
+
+  注意：若 build 后 bin\gameserver.exe 没有被替换，请先关闭正在运行的“启动游戏服务器”，再重新运行 build.bat（运行中的 exe 无法被覆盖）。
+
+  编译成功后会有：
+  - golang_version\output\gameserver.exe
+  - golang_version\bin\gameserver.exe（与 启动游戏服务器.bat 同目录，方便直接启动）
+
+端口说明：
+  原 80 端口（资源备用）已改为 8088，无需管理员权限即可启动。
+  主资源端口仍为 32400，游戏逻辑端口不变。
+
+血条修复：
+  双方攻击后下发的 remainHP 已限制在 [0, maxHP]，血条不会超出范围。

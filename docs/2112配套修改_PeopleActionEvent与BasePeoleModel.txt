@@ -1,0 +1,39 @@
+// 使用 NonoManager_改后全文.txt 后，必须配套做以下两处修改，否则「他人」收到 2112 后不会刷新飞行表现。
+// 1) PeopleActionEvent 中增加常量 FLY_MODE
+// 2) BasePeoleModel.onAction 的 switch 中增加 FLY_MODE 的 case
+
+// ========== 1. PeopleActionEvent ==========
+// 用 FFDec 打开对应 SWF，找到 PeopleActionEvent 类，在现有 public static var XXX 常量附近增加一行：
+//    public static var FLY_MODE:String = "flyMode";
+
+
+// ========== 2. BasePeoleModel.onAction（必做：切换飞行/落地骨骼）==========
+// 在 onAction 的 switch 里，在 case PeopleActionEvent.NONO_HOOM: 之后、case PeopleActionEvent.SET_TITLE: 之前增加：
+// 注意：必须像「自己」一样切换 walk（FlyAction/WalkAction）和 standUp，否则他人只会换 NONO 形态，人仍站地上。
+// 若 BasePeoleModel 当前没有 import FlyAction/WalkAction，需在类头增加：
+//    import com.robot.core.aticon.FlyAction;
+//    import com.robot.core.aticon.WalkAction;
+
+            case PeopleActionEvent.FLY_MODE:
+               this._info.actionType = param1.data.actionType as uint;
+               this.hideNono();
+               if(this._info.actionType == 0)
+               {
+                  this.walk = new WalkAction();
+                  this.clickMc.y = -50;
+                  new PeculiarAction().standUp(this.skeleton as EmptySkeletonStrategy);
+               }
+               else
+               {
+                  this.walk = new FlyAction(this);
+               }
+               if(Boolean(this._nono))
+               {
+                  this.showNono(this._nono.info,this._info.actionType);
+               }
+               break;
+
+
+// ========== 3. BasePeoleModel.showNono（他人飞行形态）==========
+// 若尚未改过，请按 BasePeoleModel_showNono_他人飞行补充.txt 修改 showNono 的 else 分支，
+// 使「他人」在 param2 != 0 时使用 NonoFlyModel，否则他人飞行时不会显示飞行 NONO。

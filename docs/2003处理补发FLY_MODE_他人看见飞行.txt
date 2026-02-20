@@ -1,0 +1,74 @@
+================================================================================
+  2003 处理里补发 FLY_MODE —— 解决「右侧/他人看不见 NONO 飞行」必做一步
+================================================================================
+
+现象：左侧（开飞行的人）能看到自己的 NONO 飞行，右侧（其他玩家）看到的
+      仍是该玩家的 NONO 站立、无飞行光环。
+
+原因：右侧客户端在收到 2003 时已经拿到了他人的 actionType（如 4），并写入了
+      UserInfo，但 2003 处理里**没有**根据 actionType 触发一次 FLY_MODE，
+      所以 BasePeoleModel 的 onAction(FLY_MODE) 从未执行，showNono(..., actionType)
+      没被调用，他人一直显示默认/站立 NONO。  
+      若 2112 比 2003 晚到、或 2112 未被右侧处理，也只能靠 2003 触发一次刷新。
+
+必做：在「处理 CMD 2003（地图玩家列表）」的类里，对**每条** PeopleInfo 解析并
+      更新/创建完该玩家的 UserInfo 与模型后，若 actionType != 0，补发一次
+      FLY_MODE，让该玩家的 BasePeoleModel 执行飞行分支并 showNono(..., actionType)。
+
+--------------------------------------------------------------------------------
+步骤 1：找到 2003 的处理类
+--------------------------------------------------------------------------------
+在 FFDec 中打开 dll/NieoCore.swf（或主逻辑 SWF），搜索：
+  - "2003" 或 CommandID / LIST_MAP_PLAYER 等 2003 常量
+  - "setForPeoleInfo"（2003 里会用它解析每条 PeopleInfo 写入 UserInfo）
+  - "UserManager.addUser" / "getUserModel" / 创建 BasePeoleModel 等
+
+找到后，定位到「循环处理每条玩家」、在调用 setForPeoleInfo 或等效解析、
+并已得到该条玩家的 userId 与 actionType 的那段代码。
+
+--------------------------------------------------------------------------------
+步骤 2：在每条玩家处理末尾补发 FLY_MODE
+--------------------------------------------------------------------------------
+在该循环内，**每处理完一条玩家**（即已用 setForPeoleInfo 或等效逻辑把
+userId、actionType、superNono 等写入 UserInfo，且已创建或已有该玩家的
+BasePeoleModel）后，增加：
+
+   if (actionType != 0)
+   {
+      UserManager.dispatchAction(userId, PeopleActionEvent.FLY_MODE, { actionType: actionType });
+   }
+
+变量名请按你当前 2003 处理里的实际名称替换，例如：
+  - userId 可能是 uid / userID / _loc3_ 等（该条玩家的 ID）
+  - actionType 可能已在 setForPeoleInfo 里写入 param1.actionType，需在循环里
+    用「该条」的 UserInfo 或解析出的临时变量，例如：
+      var actionType:uint = info.actionType;  // 或解析时的 _loc4_ 等
+
+若 2003 里是先读人数、再循环「每条」用 ByteArray 调 UserInfo.setForPeoleInfo(info, data)，
+则 setForPeoleInfo 内部已把 actionType 写入 info，循环里用 info.userID 和 info.actionType 即可：
+
+   UserInfo.setForPeoleInfo(info, data);   // 或你项目里的写法
+   // ... 创建或取得该玩家的 BasePeoleModel，加入地图等 ...
+   if (info.actionType != 0)
+   {
+      UserManager.dispatchAction(info.userID, PeopleActionEvent.FLY_MODE, { actionType: info.actionType });
+   }
+
+--------------------------------------------------------------------------------
+步骤 3：确保依赖存在
+--------------------------------------------------------------------------------
+- PeopleActionEvent 中需有：public static var FLY_MODE:String = "flyMode";
+- BasePeoleModel 的 onAction 里需有 case PeopleActionEvent.FLY_MODE 的完整处理
+  （见 BasePeoleModel_改后全文.txt），包括他人用 superNono 拼 NonoInfo 并
+  showNono(_loc4_, this._info.actionType)。
+
+--------------------------------------------------------------------------------
+步骤 4：与 2112 常驻监听的关系
+--------------------------------------------------------------------------------
+- 2112 常驻监听（NonoManager getInstance 里注册）保证：当「别人」开/关飞行时，
+  右侧能收到广播 2112 并执行 FLY_MODE，从而刷新他人 NONO。
+- 2003 补发 FLY_MODE 保证：进图或收到 2003 时，若列表里已有正在飞行的玩家，
+  右侧在解析 2003 时就会立刻触发一次 FLY_MODE，不依赖 2112 是否先到。
+两者都做，他人飞行在「右侧」视角下才会稳定显示为飞行 NONO。
+
+================================================================================

@@ -1,0 +1,33 @@
+// 他人飞行时也必须用 NonoFlyModel，否则只显示站立 SWF，不显示飞行 SWF（nonoFly、6_N 等）
+      public function showNono(param1:NonoInfo, param2:uint = 0) : void
+      {
+         param1.flyStyle = param2;
+         if(Boolean(this._nono))
+         {
+            this._nono.destroy();
+            this._nono = null;
+         }
+         if(this._info.userID != MainManager.actorInfo.userID)
+         {
+            if(param1.state == null || param1.state.length < 2 || !param1.state[1])
+            {
+               return;
+            }
+         }
+         if(param1.superStage == 0)
+         {
+            param1.superStage = 1;
+         }
+         if(param2 == 0)
+         {
+            this._nono = new NonoModel(param1,this);
+         }
+         else if(param1.userID == MainManager.actorInfo.userID)
+         {
+            this._nono = new NonoFlyModel(param1,this);
+         }
+         else
+         {
+            this._nono = new NonoFlyModel(param1,this);
+         }
+      }

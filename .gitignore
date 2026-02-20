@@ -1,0 +1,38 @@
+# 构建与缓存
+.cache/
+.go-build/
+.go-build-cache/
+.gocache/
+output/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 依赖与压缩包
+*.rar
+*.zip
+vendor/
+
+# 游戏资源（体积大，建议用网盘或 Git LFS 单独分发）
+gameres/
+
+# 敏感/本地数据（按需取消注释）
+# users.json.imported
+# data/*.json
+.github-token
+
+# 编辑器与系统
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# 测试与临时
+*.test
+*.out
+tmp/
+temp/
+*.log

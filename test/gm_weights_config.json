@@ -1,0 +1,16 @@
+{
+  "capsuleCatchRates": {
+    "300001": 50,
+    "300002": 65,
+    "300003": 80,
+    "300004": 95,
+    "300005": 90,
+    "300006": 100,
+    "300009": 100
+  },
+  "fusionSuccessRate": 100,
+  "fusionSuccessRates": {},
+  "soulPearlTransmuteTm": {},
+  "soulPearlVipTransmuteTm": {},
+  "soulPearlRewardPets": {}
+}

@@ -1,0 +1,98 @@
+[
+  {
+    "itemID": 300001,
+    "weight": 5,
+    "name": "普通精灵胶囊",
+    "isGold": false
+  },
+  {
+    "itemID": 300002,
+    "weight": 5,
+    "name": "中级精灵胶囊",
+    "isGold": false
+  },
+  {
+    "itemID": 300003,
+    "weight": 5,
+    "name": "高级精灵胶囊",
+    "isGold": false
+  },
+  {
+    "itemID": 300004,
+    "weight": 5,
+    "name": "超级精灵胶囊",
+    "isGold": false
+  },
+  {
+    "itemID": 300011,
+    "weight": 5,
+    "name": "初级体力药剂",
+    "isGold": false
+  },
+  {
+    "itemID": 300012,
+    "weight": 5,
+    "name": "中级体力药剂",
+    "isGold": false
+  },
+  {
+    "itemID": 300013,
+    "weight": 5,
+    "name": "高级体力药剂",
+    "isGold": false
+  },
+  {
+    "itemID": 300014,
+    "weight": 5,
+    "name": "超级体力药剂",
+    "isGold": false
+  },
+  {
+    "itemID": 300015,
+    "weight": 5,
+    "name": "特级体力药剂",
+    "isGold": false
+  },
+  {
+    "itemID": 300016,
+    "weight": 5,
+    "name": "初级活力药剂",
+    "isGold": false
+  },
+  {
+    "itemID": 300017,
+    "weight": 5,
+    "name": "中级活力药剂",
+    "isGold": false
+  },
+  {
+    "itemID": 300018,
+    "weight": 5,
+    "name": "高级活力药剂",
+    "isGold": false
+  },
+  {
+    "itemID": 300019,
+    "weight": 5,
+    "name": "超级活力药剂",
+    "isGold": false
+  },
+  {
+    "itemID": 300152,
+    "weight": 5,
+    "name": "形态固定胶囊",
+    "isGold": false
+  },
+  {
+    "itemID": 300153,
+    "weight": 5,
+    "name": "形态还原胶囊",
+    "isGold": false
+  },
+  {
+    "itemID": 300651,
+    "weight": 5,
+    "name": "全能学习力注入剂",
+    "isGold": false
+  }
+]

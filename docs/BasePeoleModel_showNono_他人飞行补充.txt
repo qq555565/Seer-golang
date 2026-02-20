@@ -1,0 +1,19 @@
+// BasePeoleModel.showNono 中「他人」飞行形态补充
+// 作用：他人飞行时（param2 != 0）也使用 NonoFlyModel，与 2112 同步后一致。
+// 在 BasePeoleModel_改后全文.txt 的 showNono 里，把 else 分支改成下面两段。
+
+// 原 else 段：
+//         else
+//         {
+//            this._nono = new NonoModel(param1,this);
+//         }
+
+// 改为：
+         else if(param2 != 0)
+         {
+            this._nono = new NonoFlyModel(param1,this);
+         }
+         else
+         {
+            this._nono = new NonoModel(param1,this);
+         }

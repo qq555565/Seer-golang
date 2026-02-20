@@ -1,0 +1,2220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KYSE 赛尔号 GM 管理系统</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        /* 扁平式 UI：纯色、无渐变、无阴影、简洁边框 */
+        :root { --kyse-primary: #1f2937; --kyse-primary-light: #374151; --kyse-primary-dark: #111827; --kyse-success: #059669; --kyse-danger: #dc2626; --kyse-border: #e5e7eb; --kyse-bg: #f3f4f6; --kyse-sidebar-width: 256px; }
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', Roboto, sans-serif; background: var(--kyse-bg); -webkit-font-smoothing: antialiased; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #e5e7eb; }
+        ::-webkit-scrollbar-thumb { background: #9ca3af; }
+        .kyse-layout { display: flex; height: 100vh; overflow: hidden; }
+        .kyse-sidebar { width: var(--kyse-sidebar-width); background: #fff; border-right: 1px solid var(--kyse-border); display: flex; flex-direction: column; flex-shrink: 0; }
+        .kyse-sidebar .logo { padding: 20px; border-bottom: 1px solid var(--kyse-border); }
+        .kyse-sidebar .logo-inner { display: flex; align-items: center; gap: 12px; }
+        .kyse-sidebar .logo-icon { width: 36px; height: 36px; background: var(--kyse-primary); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 16px; font-weight: 700; }
+        .kyse-sidebar .logo h2 { margin: 0; font-size: 1.125rem; font-weight: 700; color: #111827; }
+        .kyse-sidebar .logo p { margin: 2px 0 0; font-size: 12px; color: #6b7280; }
+        .kyse-nav { padding: 8px 0; }
+        .kyse-nav-item { padding: 10px 16px; margin: 2px 12px; cursor: pointer; transition: background 0.15s; border-radius: 4px; color: #4b5563; font-weight: 500; border: none; background: transparent; width: 100%; text-align: left; font-size: 14px; }
+        .kyse-nav-item:hover { background: #f3f4f6; color: #111827; }
+        .kyse-nav-item.active { background: var(--kyse-primary); color: #fff; }
+        .kyse-main { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+        .kyse-header { background: #fff; border-bottom: 1px solid var(--kyse-border); padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+        .kyse-header h3 { margin: 0; font-size: 1rem; font-weight: 600; color: #111827; }
+        .kyse-header-actions { display: flex; align-items: center; gap: 8px; }
+        .kyse-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 4px; font-weight: 500; border: 1px solid transparent; cursor: pointer; transition: background 0.15s, border-color 0.15s; font-size: 14px; }
+        .kyse-btn-primary { background: var(--kyse-primary); color: #fff; }
+        .kyse-btn-primary:hover { background: var(--kyse-primary-dark); color: #fff; }
+        .kyse-btn-success { background: var(--kyse-success); color: #fff; }
+        .kyse-btn-success:hover { background: #047857; color: #fff; }
+        .kyse-btn-danger { background: var(--kyse-danger); color: #fff; }
+        .kyse-btn-danger:hover { background: #b91c1c; color: #fff; }
+        .kyse-btn-secondary { background: #fff; color: #374151; border-color: var(--kyse-border); }
+        .kyse-btn-secondary:hover { background: #f9fafb; border-color: #9ca3af; }
+        .kyse-content { flex: 1; overflow: auto; padding: 20px; background: var(--kyse-bg); }
+        .content-section { display: none; }
+        .content-section.active { display: block; }
+        .page-block { background: #fff; border-radius: 4px; border: 1px solid var(--kyse-border); overflow: hidden; margin-bottom: 20px; }
+        .page-block-header { background: var(--kyse-primary); color: #fff; padding: 12px 20px; font-size: 1rem; font-weight: 600; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+        .page-block-body { padding: 20px; }
+        .stat-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+        @media (max-width: 992px) { .stat-cards { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 576px) { .stat-cards { grid-template-columns: 1fr; } }
+        .stat-card { background: #fff; border-radius: 4px; border: 1px solid var(--kyse-border); overflow: hidden; }
+        .stat-card .stat-header { padding: 12px 16px; border-bottom: 1px solid var(--kyse-border); display: flex; align-items: center; justify-content: space-between; font-weight: 600; color: #374151; font-size: 14px; }
+        .stat-card .stat-body { padding: 16px; text-align: center; }
+        .stat-card .stat-value { font-size: 1.75rem; font-weight: 700; color: #1f2937; }
+        .stat-card .stat-value.blue { color: #2563eb; }
+        .stat-card .stat-value.green { color: #059669; }
+        .stat-card .stat-value.purple { color: #7c3aed; }
+        .stat-card .stat-value.orange { color: #ea580c; }
+        .stat-card .stat-label { font-size: 13px; color: #6b7280; margin-top: 6px; }
+        .detail-card { background: #fff; border-radius: 4px; border: 1px solid var(--kyse-border); padding: 16px; margin-bottom: 16px; }
+        .detail-card h5 { color: #1f2937; font-weight: 600; padding-bottom: 8px; margin-bottom: 12px; border-bottom: 1px solid var(--kyse-border); font-size: 1rem; }
+        .user-item { padding: 12px 14px; border: 1px solid var(--kyse-border); cursor: pointer; background: #fff; margin-bottom: 8px; border-radius: 4px; transition: background 0.15s, border-color 0.15s; }
+        .user-item:hover { background: #f9fafb; border-color: #d1d5db; }
+        .item-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+        .item-box { border: 1px solid var(--kyse-border); border-radius: 4px; padding: 10px; text-align: center; background: #fff; }
+        .pet-card { border: 1px solid var(--kyse-border); border-radius: 4px; padding: 12px; margin-bottom: 8px; background: #fff; }
+        .scroll-panel { max-height: 400px; overflow-y: auto; }
+        .kyse-input { width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background: #fff; }
+        .kyse-input:focus { outline: none; border-color: var(--kyse-primary); }
+        #dashboardDatabaseInfo { color: #6b7280; font-size: 13px; }
+        .weights-subtitle { font-weight: 600; color: #1f2937; margin-bottom: 6px; font-size: 14px; }
+        .weights-desc { font-size: 13px; color: #6b7280; margin-bottom: 12px; line-height: 1.5; }
+        .weights-table { width: 100%; border-collapse: collapse; border: 1px solid var(--kyse-border); }
+        .weights-table th, .weights-table td { padding: 10px 12px; border-bottom: 1px solid var(--kyse-border); text-align: left; }
+        .weights-table th { background: #f9fafb; font-weight: 600; color: #374151; font-size: 13px; }
+        .weights-table tbody tr:hover { background: #f9fafb; }
+        /* 数据框宽度比内容宽约 2 字符，避免数字被截断；number 需预留 spinner 空间 */
+        .weights-table input.form-control-sm[type="number"] { min-width: 7ch; width: 7ch; box-sizing: border-box; padding-right: 4px; }
+        .weights-table input.form-control-sm[type="text"] { min-width: calc(12ch + 2ch); box-sizing: border-box; }
+        .weights-table .num-cell { white-space: nowrap; }
+        .num-spin { display: inline-flex; align-items: center; gap: 4px; }
+        .num-spin input { width: 72px; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; text-align: center; background: #fff; }
+        .num-spin button { width: 28px; height: 28px; padding: 0; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; cursor: pointer; font-size: 14px; line-height: 1; }
+        .num-spin button:hover { background: #f3f4f6; border-color: #9ca3af; }
+        .weights-fusion-scroll { max-height: 400px; overflow-y: auto; }
+        .fusion-b-tags { min-height: 28px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        .fusion-b-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: #e5e7eb; border-radius: 4px; font-size: 13px; border: 1px solid #d1d5db; }
+        .fusion-b-tag .fusion-b-remove { cursor: pointer; color: #6b7280; }
+        .fusion-b-tag .fusion-b-remove:hover { color: #ef4444; }
+        /* 模态框扁平 */
+        .modal-content { border-radius: 4px; border: 1px solid var(--kyse-border); box-shadow: none; }
+        .modal-header { border-bottom: 1px solid var(--kyse-border); padding: 12px 16px; }
+        .modal-body { padding: 16px; }
+        .modal-footer { border-top: 1px solid var(--kyse-border); padding: 12px 16px; }
+        .form-control, .form-select { border-radius: 4px; border: 1px solid #d1d5db; }
+    </style>
+</head>
+<body>
+    <div class="kyse-layout">
+        <aside class="kyse-sidebar">
+            <div class="logo">
+                <div class="logo-inner">
+                    <div class="logo-icon">K</div>
+                    <div><h2>KYSE</h2><p>赛尔号 GM 管理</p></div>
+                </div>
+            </div>
+            <nav class="kyse-nav">
+                <div class="kyse-nav-item active" data-section="dashboard" onclick="showSection('dashboard')">仪表盘</div>
+                <div class="kyse-nav-item" data-section="users" onclick="showSection('users')">用户管理</div>
+                <div class="kyse-nav-item" data-section="pets" onclick="showSection('pets')">精灵管理</div>
+                <div class="kyse-nav-item" data-section="gacha" onclick="showSection('gacha')">扭蛋机</div>
+                <div class="kyse-nav-item" data-section="weights" onclick="showSection('weights')">权重管理</div>
+                <div class="kyse-nav-item" data-section="buffs" onclick="showSection('buffs'); loadBuffItems(); loadRewards();">BUFF / 奖励</div>
+                <div class="kyse-nav-item" data-section="fusion" onclick="showSection('fusion')">精灵融合管理</div>
+                <div class="kyse-nav-item" data-section="maps" onclick="showSection('maps')">地图管理</div>
+                <div class="kyse-nav-item" data-section="fightlevel" onclick="showSection('fightlevel'); loadFightLevel();">勇者之塔</div>
+            </nav>
+        </aside>
+        <div class="kyse-main">
+            <header class="kyse-header">
+                <h3 id="kysePageTitle">仪表盘</h3>
+                <div class="kyse-header-actions">
+                    <button type="button" class="kyse-btn kyse-btn-secondary" onclick="loadDashboard(); loadUsers();">刷新</button>
+                    <button type="button" class="kyse-btn kyse-btn-primary" onclick="checkConnection()">连接状态</button>
+                </div>
+            </header>
+            <main class="kyse-content">
+        <!-- 仪表盘 -->
+        <div id="dashboard" class="content-section active">
+            <div class="stat-cards">
+                <div class="stat-card"><div class="stat-header">总用户数</div><div class="stat-body"><div class="stat-value blue" id="totalUsers">0</div><div class="stat-label">注册用户总数</div></div></div>
+                <div class="stat-card"><div class="stat-header">在线用户</div><div class="stat-body"><div class="stat-value green" id="onlineUsers">0</div><div class="stat-label">当前在线</div></div></div>
+                <div class="stat-card"><div class="stat-header">总精灵数</div><div class="stat-body"><div class="stat-value purple" id="totalPets">0</div><div class="stat-label">精灵总数</div></div></div>
+                <div class="stat-card"><div class="stat-header">总金币</div><div class="stat-body"><div class="stat-value orange" id="totalCoins">0</div><div class="stat-label">赛尔豆合计</div></div></div>
+            </div>
+            <div id="dashboardDatabaseInfo"></div>
+        </div>
+        <!-- 用户管理 -->
+        <div id="users" class="content-section">
+            <div class="row">
+                <div class="col-md-4">
+                    <div class="page-block">
+                        <div class="page-block-header">查找账号</div>
+                        <div class="page-block-body">
+                            <div class="d-flex gap-2 mb-3">
+                                <input type="text" class="form-control kyse-input" id="searchKeyword" placeholder="用户ID / 昵称 / 邮箱" onkeyup="if(event.key==='Enter')loadUsers()">
+                                <button type="button" class="kyse-btn kyse-btn-primary" onclick="loadUsers()">搜索</button>
+                            </div>
+                            <h6 class="text-secondary mb-2">用户列表</h6>
+                            <div id="userList"></div>
+                        </div>
+                    </div>
+                    <div class="page-block">
+                            <div class="page-block-header">新增账号</div>
+                        <div class="page-block-body">
+                            <div class="mb-2"><input type="text" class="form-control kyse-input" id="newEmail" placeholder="邮箱"></div>
+                            <div class="mb-2"><input type="text" class="form-control kyse-input" id="newPassword" placeholder="密码"></div>
+                            <div class="mb-2"><input type="text" class="form-control kyse-input" id="newNickname" placeholder="昵称（可选）"></div>
+                            <button type="button" class="kyse-btn kyse-btn-success w-100" onclick="createAccount()">创建账号</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-8">
+                    <div id="userDetail" style="display:none;">
+                        <div class="page-block">
+                            <div class="page-block-header">基本信息</div>
+                            <div class="page-block-body">
+                            <div class="row">
+                                <div class="col-md-6"><strong>用户ID:</strong> <span id="detailUserId"></span></div>
+                                <div class="col-md-6"><strong>邮箱:</strong> <span id="detailEmail"></span></div>
+                                <div class="col-md-6"><strong>昵称:</strong> <input type="text" class="form-control form-control-sm" id="detailNick"></div>
+                                <div class="col-md-6"><strong>金币:</strong> <input type="number" class="form-control form-control-sm" id="detailCoins"></div>
+                                <div class="col-md-6"><strong>金豆:</strong> <input type="number" class="form-control form-control-sm" id="detailGold"></div>
+                                <div class="col-md-6"><strong>体力:</strong> <input type="number" class="form-control form-control-sm" id="detailEnergy"></div>
+                            </div>
+                            <div class="mt-3">
+                                <button type="button" class="kyse-btn kyse-btn-primary" onclick="saveUserInfo()">保存修改</button>
+                                <button type="button" class="kyse-btn kyse-btn-danger ms-2" onclick="deleteAccount()">删除该账号</button>
+                            </div>
+                            </div>
+                        </div>
+                        <div class="page-block">
+                            <div class="page-block-header">经验分配器</div>
+                            <div class="page-block-body">
+                            <div class="mb-2"><strong>当前经验池：</strong><span id="detailExpPool">0</span></div>
+                            <div class="d-flex gap-2 mb-2">
+                                <input type="number" class="form-control form-control-sm" id="expAddAmount" placeholder="发放数量" min="0" value="100">
+                                <button type="button" class="kyse-btn kyse-btn-success" onclick="gmExpAdd()">发放经验</button>
+                            </div>
+                            <div class="d-flex gap-2 mt-2">
+                                <input type="number" class="form-control form-control-sm" id="expSetValue" placeholder="设为数值" min="0">
+                                <button type="button" class="kyse-btn kyse-btn-primary" onclick="gmExpSet()">设置经验</button>
+                            </div>
+                            </div>
+                        </div>
+                        <div class="page-block">
+                            <div class="page-block-header">精灵背包 <button type="button" class="kyse-btn kyse-btn-success ms-auto" onclick="showAddPetModal()">添加精灵</button></div>
+                            <div class="page-block-body"><div id="userPets"></div></div>
+                        </div>
+                        <div class="page-block">
+                            <div class="page-block-header">物品背包 <button type="button" class="kyse-btn kyse-btn-success ms-auto" onclick="showAddItemModal()">添加物品</button></div>
+                            <div class="page-block-body"><div id="userItems" class="item-grid"></div></div>
+                        </div>
+                        <div class="page-block">
+                            <div class="page-block-header">仓库精灵</div>
+                            <div class="page-block-body"><div id="storagePets"></div></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- 精灵管理 -->
+        <div id="pets" class="content-section">
+            <div class="page-block">
+                <div class="page-block-header">精灵数据库</div>
+                <div class="page-block-body">
+                    <input type="text" class="form-control kyse-input mb-3" placeholder="搜索精灵ID或名称..." onkeyup="searchPets(this.value)">
+                    <div id="petDatabase" class="scroll-panel"></div>
+                </div>
+            </div>
+            <div class="page-block">
+                <div class="page-block-header">道具数据库</div>
+                <div class="page-block-body">
+                    <input type="text" class="form-control kyse-input mb-3" placeholder="搜索道具ID或名称..." onkeyup="searchItems(this.value)">
+                    <div id="itemDatabase" class="scroll-panel"></div>
+                </div>
+            </div>
+        </div>
+        <!-- 扭蛋机 -->
+        <div id="gacha" class="content-section">
+            <div class="page-block">
+                <div class="page-block-header">
+                    当前奖励池
+                    <span class="ms-auto d-flex gap-2">
+                        <button type="button" class="kyse-btn kyse-btn-success" onclick="gachaShowAdd()">添加奖励</button>
+                        <button type="button" class="kyse-btn kyse-btn-primary" onclick="gachaLoadList()">刷新</button>
+                        <button type="button" class="kyse-btn kyse-btn-secondary" onclick="gachaSaveConfig()">保存</button>
+                    </span>
+                </div>
+                <div class="page-block-body">
+                    <p class="text-muted small">权重越大抽中概率越高，金豆道具建议权重低于赛尔豆道具。</p>
+                    <div id="gachaListContainer" class="mt-3"></div>
+                </div>
+            </div>
+        </div>
+        <!-- 权重管理 -->
+        <div id="weights" class="content-section">
+            <div class="page-block">
+                <div class="page-block-header">
+                    权重管理
+                    <button type="button" class="kyse-btn kyse-btn-primary" onclick="saveWeights()">保存配置</button>
+                </div>
+                <div class="page-block-body">
+                    <div class="weights-section mb-4">
+                        <h6 class="weights-subtitle">胶囊捕捉几率(%)</h6>
+                        <p class="weights-desc">设置各胶囊的捕捉成功率修正，0-100。最终捕捉概率 = 精灵基础率 × HP因子 × 胶囊修正。以列表形式展示，不显示胶囊代码。</p>
+                        <div class="table-responsive">
+                            <table class="weights-table">
+                                <thead><tr><th>名称</th><th>捕捉率(%)</th></tr></thead>
+                                <tbody id="weightsCapsuleList"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="weights-section">
+                        <h6 class="weights-subtitle">精灵融合成功率(%)</h6>
+                        <p class="weights-desc">精灵融合指元神珠融合几率，按元神珠单独设置成功率(0-100)及普通/VIP 转化时间(秒)。100表示必定成功；转化时间为元神珠孵化所需秒数，默认普通 1800、VIP 900。元神赋形：孵化完成后按「赋形奖励精灵」权重随机给予 1 只精灵，在此列配置各精灵及权重。下表可滚动查看全部。</p>
+                        <div class="weights-fusion-scroll table-responsive">
+                            <table class="weights-table">
+                                <thead><tr><th>元神珠</th><th>融合成功率(%)</th><th>普通用户转化时间(秒)</th><th>VIP用户转化时间(秒)</th><th>赋形奖励精灵（权重）</th></tr></thead>
+                                <tbody id="weightsFusionList"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- BUFF / 奖励管理 -->
+        <div id="buffs" class="content-section">
+            <div class="page-block">
+                <div class="page-block-header">
+                    BUFF 道具配置
+                    <button type="button" class="kyse-btn kyse-btn-primary" onclick="saveBuffItems()">保存 BUFF 配置</button>
+                </div>
+                <div class="page-block-body">
+                    <p class="weights-desc">配置 BUFF 道具效果：经验加速、自动战斗、体力吸收、学习力双倍。修改后点“保存 BUFF 配置”生效，数据会写入 MySQL 表 <code>gm_buff_items_config</code>。</p>
+                    <div class="weights-section mb-4">
+                        <h6 class="weights-subtitle">经验加速道具（2327 USE_SPEEDUP_ITEM）</h6>
+                        <div class="table-responsive">
+                            <table class="weights-table">
+                                <thead>
+                                    <tr>
+                                        <th>道具ID</th>
+                                        <th>TwoTimes 增量</th>
+                                        <th>ThreeTimes 增量</th>
+                                        <th>TwoTimes 上限</th>
+                                        <th>ThreeTimes 上限</th>
+                                        <th width="80">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="buffSpeedupList"></tbody>
+                            </table>
+                        </div>
+                        <button type="button" class="kyse-btn kyse-btn-secondary mt-2" onclick="addBuffSpeedupRow()">添加行</button>
+                    </div>
+                    <div class="weights-section mb-4">
+                        <h6 class="weights-subtitle">自动战斗道具（2329 USE_AUTO_FIGHT_ITEM）</h6>
+                        <div class="table-responsive">
+                            <table class="weights-table">
+                                <thead>
+                                    <tr>
+                                        <th>道具ID</th>
+                                        <th>Times 增量</th>
+                                        <th>Times 上限</th>
+                                        <th>使用后开启自动战斗</th>
+                                        <th width="80">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="buffAutoFightList"></tbody>
+                            </table>
+                        </div>
+                        <button type="button" class="kyse-btn kyse-btn-secondary mt-2" onclick="addBuffAutoFightRow()">添加行</button>
+                    </div>
+                    <div class="weights-section mb-4">
+                        <h6 class="weights-subtitle">体力吸收道具（2331 USE_ENERGY_XISHOU）</h6>
+                        <div class="table-responsive">
+                            <table class="weights-table">
+                                <thead>
+                                    <tr>
+                                        <th>道具ID</th>
+                                        <th>Times 增量</th>
+                                        <th>Times 上限</th>
+                                        <th width="80">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="buffEnergyList"></tbody>
+                            </table>
+                        </div>
+                        <button type="button" class="kyse-btn kyse-btn-secondary mt-2" onclick="addBuffEnergyRow()">添加行</button>
+                    </div>
+                    <div class="weights-section mb-2">
+                        <h6 class="weights-subtitle">学习力双倍道具（2332 USE_STUDY_ITEM）</h6>
+                        <div class="table-responsive">
+                            <table class="weights-table">
+                                <thead>
+                                    <tr>
+                                        <th>道具ID</th>
+                                        <th>Times 增量</th>
+                                        <th>Times 上限</th>
+                                        <th width="80">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="buffStudyList"></tbody>
+                            </table>
+                        </div>
+                        <button type="button" class="kyse-btn kyse-btn-secondary mt-2" onclick="addBuffStudyRow()">添加行</button>
+                    </div>
+                </div>
+            </div>
+            <div class="page-block">
+                <div class="page-block-header">
+                    奖励配置（活动赠宠 / 罗威训练）
+                    <button type="button" class="kyse-btn kyse-btn-primary" onclick="saveRewards()">保存奖励配置</button>
+                </div>
+                <div class="page-block-body">
+                    <p class="weights-desc">通过活动 ID 统一控制赠宠与罗威训练奖励。修改后点“保存奖励配置”，数据写入 MySQL 表 <code>gm_reward_config</code>。</p>
+                    <div class="weights-section mb-4">
+                        <h6 class="weights-subtitle">活动赠宠列表（2311 PET_COLLECT）</h6>
+                        <div class="table-responsive">
+                            <table class="weights-table">
+                                <thead>
+                                    <tr>
+                                        <th>ActivityID</th>
+                                        <th>PetID</th>
+                                        <th>等级</th>
+                                        <th>DV</th>
+                                        <th>性格</th>
+                                        <th width="80">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="rewardCollectList"></tbody>
+                            </table>
+                        </div>
+                        <button type="button" class="kyse-btn kyse-btn-secondary mt-2" onclick="addRewardCollectRow()">添加行</button>
+                    </div>
+                    <div class="weights-section">
+                        <h6 class="weights-subtitle">罗威训练奖励（预留）</h6>
+                        <div class="row g-2 align-items-center">
+                            <div class="col-md-3">
+                                <label class="form-label small mb-1">基础经验</label>
+                                <input type="number" class="form-control form-control-sm" id="roweiBaseExp" value="0" min="0">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small mb-1">每小时经验</label>
+                                <input type="number" class="form-control form-control-sm" id="roweiExpPerHour" value="0" min="0">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small mb-1">每小时赛尔豆</label>
+                                <input type="number" class="form-control form-control-sm" id="roweiCoinPerHour" value="0" min="0">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- 精灵融合管理 -->
+        <div id="fusion" class="content-section">
+            <div class="page-block">
+                <div class="page-block-header">
+                    精灵融合管理
+                    <button type="button" class="kyse-btn kyse-btn-primary" onclick="saveFusionRules()">保存配置</button>
+                </div>
+                <div class="page-block-body">
+                    <p class="weights-desc mb-3">自定义融合规则：精灵A（单选）+ 精灵B（可多选）→ 元神珠。精灵A 与 精灵B 中任意一只融合即获得对应元神珠，100% 成功。数据保存到数据库表 gm_fusion_rules。</p>
+                    <div class="fusion-add mb-4">
+                        <h6 class="weights-subtitle">添加规则</h6>
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-3">
+                                <label class="form-label small mb-1">精灵A（单选）</label>
+                                <input type="text" class="form-control kyse-input" id="fusionPetA" list="fusionPetListA" placeholder="输入或选择一只精灵">
+                                <datalist id="fusionPetListA"></datalist>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small mb-1">精灵B（多选，可添加多只）</label>
+                                <div class="d-flex gap-1 align-items-center">
+                                    <input type="text" class="form-control kyse-input flex-grow-1" id="fusionPetB" list="fusionPetListB" placeholder="输入或选择精灵">
+                                    <datalist id="fusionPetListB"></datalist>
+                                    <button type="button" class="kyse-btn kyse-btn-secondary flex-shrink-0" onclick="addFusionBOne()">添加精灵B</button>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small mb-1">元神珠</label>
+                                <input type="text" class="form-control kyse-input" id="fusionSoulPearl" list="fusionSoulPearlList" placeholder="输入或选择元神珠">
+                                <datalist id="fusionSoulPearlList"></datalist>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small mb-1 d-block">&nbsp;</label>
+                                <button type="button" class="kyse-btn kyse-btn-success w-100" onclick="addFusionRule()">添加规则</button>
+                            </div>
+                        </div>
+                        <div id="fusionBSelectedList" class="fusion-b-tags mt-2"></div>
+                    </div>
+                    <h6 class="weights-subtitle">当前规则列表</h6>
+                    <div class="table-responsive">
+                        <table class="weights-table">
+                            <thead><tr><th>精灵A</th><th>精灵B</th><th>元神珠</th><th width="80">操作</th></tr></thead>
+                            <tbody id="fusionRulesList"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- 地图管理 -->
+        <div id="maps" class="content-section">
+            <div class="page-block">
+                <div class="page-block-header">地图精灵配置</div>
+                <div class="page-block-body"><div id="mapConfig"></div></div>
+            </div>
+        </div>
+        <!-- 勇者之塔 -->
+        <div id="fightlevel" class="content-section">
+            <div class="page-block">
+                <div class="page-block-header d-flex justify-content-between align-items-center flex-wrap">
+                    <span>勇者之塔配置（1~80 层，每层 Boss 精灵 ID 列表）</span>
+                    <div>
+                        <button type="button" class="kyse-btn kyse-btn-secondary btn-sm me-2" onclick="loadFightLevel()">刷新</button>
+                        <button type="button" class="kyse-btn kyse-btn-secondary btn-sm me-2" onclick="fillFightLevelByOrder()">按精灵代码顺序每层3只</button>
+                        <button type="button" class="kyse-btn kyse-btn-secondary btn-sm me-2" onclick="fillFightLevelRandom()">每层随机三只精灵</button>
+                        <button type="button" class="kyse-btn kyse-btn-success btn-sm" onclick="saveFightLevel()">保存全部</button>
+                    </div>
+                </div>
+                <div class="page-block-body">
+                    <p class="text-muted small mb-2">每层至少填一个精灵 ID，多个用英文逗号分隔。等级填 0 表示自动(10+层数)。属性倍率 100 为原始。经验加入经验池、赛尔豆、道具/装备 ID、精灵 ID 填 0 表示无。</p>
+                    <div class="scroll-panel" style="max-height: min(75vh, 900px); min-height: 360px; overflow-y: auto; overflow-x: auto;">
+                        <table class="weights-table" id="fightLevelTable" style="margin-bottom: 0;">
+                            <thead><tr>
+                                <th>层</th>
+                                <th>Boss 精灵 ID</th>
+                                <th>等级</th>
+                                <th>HP%</th>
+                                <th>攻%</th>
+                                <th>防%</th>
+                                <th>特攻%</th>
+                                <th>特防%</th>
+                                <th>速%</th>
+                                <th>经验</th>
+                                <th>赛尔豆</th>
+                                <th>奖励道具/装备</th>
+                                <th>奖励精灵</th>
+                            </tr></thead>
+                            <tbody id="fightLevelList"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+            </main>
+        </div>
+    </div>
+    
+    <!-- 模态框 -->
+    <div class="modal fade" id="addPetModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">添加精灵</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label>精灵ID</label>
+                        <input type="text" class="form-control" id="addPetId" list="petOptions" placeholder="例如: 166 闪光波克尔">
+                        <datalist id="petOptions"></datalist>
+                        <div class="form-text">可直接输入ID，或从下拉列表中选择“ID 中文名”。</div>
+                    </div>
+                    <div class="mb-3">
+                        <label>等级</label>
+                        <input type="number" class="form-control" id="addPetLevel" value="1" min="1" max="100">
+                    </div>
+                    <hr>
+                    <div class="mb-3">
+                        <label>初始性格（可选）</label>
+                        <select class="form-select" id="addPetNature">
+                            <option value="">默认(0)</option>
+                            <option value="0">0 - 孤独 - 攻击↑ 防御↓</option>
+                            <option value="1">1 - 勇敢 - 攻击↑ 速度↓</option>
+                            <option value="2">2 - 固执 - 攻击↑ 特攻↓</option>
+                            <option value="3">3 - 调皮 - 攻击↑ 特防↓</option>
+                            <option value="4">4 - 胆小 - 速度↑ 攻击↓</option>
+                            <option value="5">5 - 急躁 - 速度↑ 防御↓</option>
+                            <option value="6">6 - 开朗 - 速度↑ 特攻↓</option>
+                            <option value="7">7 - 天真 - 速度↑ 特防↓</option>
+                            <option value="8">8 - 大胆 - 防御↑ 攻击↓</option>
+                            <option value="9">9 - 悠闲 - 防御↑ 速度↓</option>
+                            <option value="10">10 - 顽皮 - 防御↑ 特攻↓</option>
+                            <option value="11">11 - 无虑 - 防御↑ 特防↓</option>
+                            <option value="12">12 - 保守 - 特攻↑ 攻击↓</option>
+                            <option value="13">13 - 稳重 - 特攻↑ 防御↓</option>
+                            <option value="14">14 - 冷静 - 特攻↑ 速度↓</option>
+                            <option value="15">15 - 马虎 - 特攻↑ 特防↓</option>
+                            <option value="16">16 - 沉着 - 特防↑ 攻击↓</option>
+                            <option value="17">17 - 温顺 - 特防↑ 防御↓</option>
+                            <option value="18">18 - 狂妄 - 特防↑ 速度↓</option>
+                            <option value="19">19 - 慎重 - 特防↑ 特攻↓</option>
+                            <option value="20">20 - 害羞 - 平衡（无加成）</option>
+                            <option value="21">21 - 浮躁 - 平衡（无加成）</option>
+                            <option value="22">22 - 坦率 - 平衡（无加成）</option>
+                            <option value="23">23 - 实干 - 平衡（无加成）</option>
+                            <option value="24">24 - 认真 - 平衡（无加成）</option>
+                        </select>
+                        <div class="form-text">一加一减对应表，仅影响战斗属性。</div>
+                    </div>
+                    <div class="mb-3">
+                        <label>初始特性（可选）</label>
+                        <select class="form-select" id="addPetTrait">
+                            <option value="">不设置特性</option>
+                            <option value="-1">随机分配一个特性</option>
+                            <option value="1006">1006 - 叶绿</option>
+                            <option value="1007">1007 - 流水</option>
+                            <option value="1008">1008 - 炎火</option>
+                            <option value="1009">1009 - 飞空</option>
+                            <option value="1010">1010 - 蓄电</option>
+                            <option value="1011">1011 - 机能</option>
+                            <option value="1012">1012 - 碎裂</option>
+                            <option value="1013">1013 - 平衡</option>
+                            <option value="1014">1014 - 冰霜</option>
+                            <option value="1015">1015 - 魔幻</option>
+                            <option value="1016">1016 - 战意</option>
+                            <option value="1017">1017 - 光环</option>
+                            <option value="1018">1018 - 黑夜</option>
+                            <option value="1019">1019 - 奇异</option>
+                            <option value="1020">1020 - 威严</option>
+                            <option value="1021">1021 - 圣灵</option>
+                            <option value="1022">1022 - 精准</option>
+                            <option value="1023">1023 - 会心</option>
+                            <option value="1024">1024 - 坚硬</option>
+                            <option value="1025">1025 - 回避</option>
+                            <option value="1026">1026 - 顽强</option>
+                            <option value="1027">1027 - 瞬杀</option>
+                            <option value="1028">1028 - 回神</option>
+                            <option value="1029">1029 - 带电</option>
+                            <option value="1030">1030 - 中毒</option>
+                            <option value="1031">1031 - 高热</option>
+                            <option value="1032">1032 - 冰冷</option>
+                            <option value="1033">1033 - 阴森</option>
+                            <option value="1034">1034 - 睡眠</option>
+                            <option value="1035">1035 - 反抗</option>
+                            <option value="1036">1036 - 反驳</option>
+                            <option value="1037">1037 - 忽略</option>
+                            <option value="1038">1038 - 草率</option>
+                            <option value="1039">1039 - 汲取</option>
+                            <option value="1040">1040 - 慌张</option>
+                            <option value="1041">1041 - 反击</option>
+                            <option value="1042">1042 - 抵抗</option>
+                            <option value="1043">1043 - 反攻</option>
+                            <option value="1044">1044 - 坚韧</option>
+                            <option value="1045">1045 - 借风</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="addPet()">添加</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="modal fade" id="addItemModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">添加物品</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label>物品ID</label>
+                        <input type="text" class="form-control" id="addItemId" list="itemOptions" placeholder="例如: 300001 精灵胶囊">
+                        <datalist id="itemOptions"></datalist>
+                        <div class="form-text">可直接输入ID，或从下拉列表中选择“ID 中文名”。</div>
+                    </div>
+                    <div class="mb-3"><label>数量</label><input type="number" class="form-control" id="addItemCount" value="1" min="1"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="addItem()">添加</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="editPetSkillsModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">修改精灵技能（4个槽，填技能ID，0表示保留当前）</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="editPetCatchTime" value="0">
+                    <div class="mb-2"><label>技能1 <span id="editSkillName0" class="text-muted small"></span></label><input type="number" class="form-control form-control-sm" id="editSkill0" placeholder="技能ID"></div>
+                    <div class="mb-2"><label>技能2 <span id="editSkillName1" class="text-muted small"></span></label><input type="number" class="form-control form-control-sm" id="editSkill1" placeholder="技能ID"></div>
+                    <div class="mb-2"><label>技能3 <span id="editSkillName2" class="text-muted small"></span></label><input type="number" class="form-control form-control-sm" id="editSkill2" placeholder="技能ID"></div>
+                    <div class="mb-2"><label>技能4 <span id="editSkillName3" class="text-muted small"></span></label><input type="number" class="form-control form-control-sm" id="editSkill3" placeholder="技能ID"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="savePetSkills()">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 修改精灵特性 -->
+    <div class="modal fade" id="editPetTraitModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">修改精灵特性</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="editTraitCatchTime" value="0">
+                    <input type="hidden" id="editTraitFromStorage" value="0">
+                    <div class="mb-3">
+                        <label>特性</label>
+                        <select class="form-select" id="editTraitSelect">
+                            <option value="">清除特性</option>
+                            <option value="-1">随机分配一个特性</option>
+                            <option value="1006">1006 - 叶绿</option>
+                            <option value="1007">1007 - 流水</option>
+                            <option value="1008">1008 - 炎火</option>
+                            <option value="1009">1009 - 飞空</option>
+                            <option value="1010">1010 - 蓄电</option>
+                            <option value="1011">1011 - 机能</option>
+                            <option value="1012">1012 - 碎裂</option>
+                            <option value="1013">1013 - 平衡</option>
+                            <option value="1014">1014 - 冰霜</option>
+                            <option value="1015">1015 - 魔幻</option>
+                            <option value="1016">1016 - 战意</option>
+                            <option value="1017">1017 - 光环</option>
+                            <option value="1018">1018 - 黑夜</option>
+                            <option value="1019">1019 - 奇异</option>
+                            <option value="1020">1020 - 威严</option>
+                            <option value="1021">1021 - 圣灵</option>
+                            <option value="1022">1022 - 精准</option>
+                            <option value="1023">1023 - 会心</option>
+                            <option value="1024">1024 - 坚硬</option>
+                            <option value="1025">1025 - 回避</option>
+                            <option value="1026">1026 - 顽强</option>
+                            <option value="1027">1027 - 瞬杀</option>
+                            <option value="1028">1028 - 回神</option>
+                            <option value="1029">1029 - 带电</option>
+                            <option value="1030">1030 - 中毒</option>
+                            <option value="1031">1031 - 高热</option>
+                            <option value="1032">1032 - 冰冷</option>
+                            <option value="1033">1033 - 阴森</option>
+                            <option value="1034">1034 - 睡眠</option>
+                            <option value="1035">1035 - 反抗</option>
+                            <option value="1036">1036 - 反驳</option>
+                            <option value="1037">1037 - 忽略</option>
+                            <option value="1038">1038 - 草率</option>
+                            <option value="1039">1039 - 汲取</option>
+                            <option value="1040">1040 - 慌张</option>
+                            <option value="1041">1041 - 反击</option>
+                            <option value="1042">1042 - 抵抗</option>
+                            <option value="1043">1043 - 反攻</option>
+                            <option value="1044">1044 - 坚韧</option>
+                            <option value="1045">1045 - 借风</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="savePetTrait()">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 修改精灵性格 -->
+    <div class="modal fade" id="editPetNatureModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">修改精灵性格</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="editNatureCatchTime" value="0">
+                    <input type="hidden" id="editNatureFromStorage" value="0">
+                    <div class="mb-3">
+                        <label>性格（一加一减）</label>
+                        <select class="form-select" id="editNatureSelect">
+                            <option value="0">0 - 孤独 - 攻击↑ 防御↓</option>
+                            <option value="1">1 - 勇敢 - 攻击↑ 速度↓</option>
+                            <option value="2">2 - 固执 - 攻击↑ 特攻↓</option>
+                            <option value="3">3 - 调皮 - 攻击↑ 特防↓</option>
+                            <option value="4">4 - 胆小 - 速度↑ 攻击↓</option>
+                            <option value="5">5 - 急躁 - 速度↑ 防御↓</option>
+                            <option value="6">6 - 开朗 - 速度↑ 特攻↓</option>
+                            <option value="7">7 - 天真 - 速度↑ 特防↓</option>
+                            <option value="8">8 - 大胆 - 防御↑ 攻击↓</option>
+                            <option value="9">9 - 悠闲 - 防御↑ 速度↓</option>
+                            <option value="10">10 - 顽皮 - 防御↑ 特攻↓</option>
+                            <option value="11">11 - 无虑 - 防御↑ 特防↓</option>
+                            <option value="12">12 - 保守 - 特攻↑ 攻击↓</option>
+                            <option value="13">13 - 稳重 - 特攻↑ 防御↓</option>
+                            <option value="14">14 - 冷静 - 特攻↑ 速度↓</option>
+                            <option value="15">15 - 马虎 - 特攻↑ 特防↓</option>
+                            <option value="16">16 - 沉着 - 特防↑ 攻击↓</option>
+                            <option value="17">17 - 温顺 - 特防↑ 防御↓</option>
+                            <option value="18">18 - 狂妄 - 特防↑ 速度↓</option>
+                            <option value="19">19 - 慎重 - 特防↑ 特攻↓</option>
+                            <option value="20">20 - 害羞 - 平衡（无加成）</option>
+                            <option value="21">21 - 浮躁 - 平衡（无加成）</option>
+                            <option value="22">22 - 坦率 - 平衡（无加成）</option>
+                            <option value="23">23 - 实干 - 平衡（无加成）</option>
+                            <option value="24">24 - 认真 - 平衡（无加成）</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="savePetNature()">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="gachaAddModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header"><h5 class="modal-title">添加扭蛋机奖励</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                <div class="modal-body">
+                    <div class="mb-3"><label>道具ID</label><input type="number" class="form-control" id="gachaAddItemId" placeholder="任意道具ID"></div>
+                    <div class="mb-3"><label>权重（越大概率越高）</label><input type="number" class="form-control" id="gachaAddWeight" value="5" min="1"></div>
+                    <div class="mb-3"><label>中文名称（可选）</label><input type="text" class="form-control" id="gachaAddName" placeholder="留空用系统名"></div>
+                    <div class="mb-3"><label><input type="checkbox" id="gachaAddIsGold"> 金豆商城道具</label></div>
+                </div>
+                <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button><button type="button" class="btn btn-primary" onclick="gachaAddReward()">添加</button></div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade" id="gachaEditModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header"><h5 class="modal-title">修改扭蛋机奖励</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                <div class="modal-body">
+                    <input type="hidden" id="gachaEditIndex">
+                    <div class="mb-3"><label>道具ID</label><input type="number" class="form-control" id="gachaEditItemId"></div>
+                    <div class="mb-3"><label>权重</label><input type="number" class="form-control" id="gachaEditWeight" min="1"></div>
+                    <div class="mb-3"><label>中文名称</label><input type="text" class="form-control" id="gachaEditName"></div>
+                    <div class="mb-3"><label><input type="checkbox" id="gachaEditIsGold"> 金豆商城道具</label></div>
+                </div>
+                <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button><button type="button" class="btn btn-primary" onclick="gachaSaveEdit()">保存</button></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="addRewardPetModal" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content">
+                <div class="modal-header"><h5 class="modal-title">添加赋形奖励精灵</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                <div class="modal-body">
+                    <p class="small text-muted mb-2" id="addRewardPetSoulName">—</p>
+                    <div class="mb-2"><label class="form-label small">精灵（可多选，添加后点「完成」）</label><input type="text" class="form-control form-control-sm" id="addRewardPetInput" list="addRewardPetList" placeholder="输入或选择精灵"></div>
+                    <datalist id="addRewardPetList"></datalist>
+                    <div class="mb-2"><label class="form-label small">权重</label><input type="number" class="form-control form-control-sm" id="addRewardPetWeight" value="1" min="1"></div>
+                    <div class="mb-2"><button type="button" class="kyse-btn kyse-btn-secondary btn-sm" onclick="addRewardPetToPending()">添加精灵</button></div>
+                    <div id="addRewardPetPendingList" class="fusion-b-tags mt-2 small"></div>
+                </div>
+                <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button><button type="button" class="btn btn-primary" onclick="confirmRewardPetsAndClose()">完成</button></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // 与当前页面保持同源，避免 127.0.0.1 与 localhost 不一致导致的 CORS 问题
+        const API = window.location.origin || 'http://127.0.0.1:8080';
+        let currentUserId = null;
+        let usersData = [];
+        let gachaListData = [];
+        let allPets = [];   // 精灵列表（ID + 中文名），用于下拉选择与搜索
+        let allItems = [];  // 道具列表（ID + 中文名），用于下拉选择与搜索
+        let addPetModalInstance, addItemModalInstance, editPetSkillsModalInstance, gachaAddModalInstance, gachaEditModalInstance;
+        let editPetTraitModalInstance, editPetNatureModalInstance, addRewardPetModalInstance;
+        let currentRewardRowIndex = -1;
+        let pendingRewardPets = [];
+        
+        window.onload = function() {
+            addPetModalInstance = new bootstrap.Modal(document.getElementById('addPetModal'));
+            addItemModalInstance = new bootstrap.Modal(document.getElementById('addItemModal'));
+            editPetSkillsModalInstance = new bootstrap.Modal(document.getElementById('editPetSkillsModal'));
+            editPetTraitModalInstance = new bootstrap.Modal(document.getElementById('editPetTraitModal'));
+            editPetNatureModalInstance = new bootstrap.Modal(document.getElementById('editPetNatureModal'));
+            gachaAddModalInstance = new bootstrap.Modal(document.getElementById('gachaAddModal'));
+            gachaEditModalInstance = new bootstrap.Modal(document.getElementById('gachaEditModal'));
+            addRewardPetModalInstance = new bootstrap.Modal(document.getElementById('addRewardPetModal'));
+            loadDashboard();
+            loadUsers();
+            loadPetDatabase();   // 预加载精灵列表，供下拉与搜索使用
+            loadItemDatabase();  // 预加载道具列表，供下拉与搜索使用
+        };
+        
+        const sectionTitles = { dashboard: '仪表盘', users: '用户管理', pets: '精灵管理', gacha: '扭蛋机', weights: '权重管理', fusion: '精灵融合管理', maps: '地图管理', fightlevel: '勇者之塔' };
+        function showSection(section) {
+            document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
+            document.querySelectorAll('.kyse-nav-item').forEach(n => n.classList.remove('active'));
+            document.getElementById(section).classList.add('active');
+            const navItem = document.querySelector('.kyse-nav-item[data-section="' + section + '"]');
+            if(navItem) navItem.classList.add('active');
+            const titleEl = document.getElementById('kysePageTitle');
+            if(titleEl) titleEl.textContent = sectionTitles[section] || section;
+            if(section === 'users') loadUsers();
+            if(section === 'pets') { loadPetDatabase(); loadItemDatabase(); }
+            if(section === 'gacha') gachaLoadList();
+            if(section === 'weights') loadWeights();
+            if(section === 'fusion') loadFusion();
+            if(section === 'maps') loadMapConfig();
+            if(section === 'fightlevel') loadFightLevel();
+        }
+        function checkConnection() {
+            fetch(API + '/gm/server/status').then(r => r.json()).then(d => {
+                if(d.success) alert('服务器连接正常');
+                else alert('连接异常');
+            }).catch(() => alert('服务器连接失败，请确认服务已启动且端口 8080 可访问'));
+        }
+        
+        function numSpinHtml(id, value, min, max) {
+            const v = Math.max(min, Math.min(max, parseInt(value, 10) || min));
+            return '<div class="num-spin">' +
+                '<button type="button" onclick="var i=document.getElementById(\''+id+'\'); var n=parseInt(i.value,10)||0; i.value=Math.max('+min+',n-1);">—</button>' +
+                '<input type="number" id="'+id+'" value="'+v+'" min="'+min+'" max="'+max+'" onchange="var v=this.value; this.value=Math.max('+min+',Math.min('+max+',parseInt(v,10)||'+min+'));">' +
+                '<button type="button" onclick="var i=document.getElementById(\''+id+'\'); var n=parseInt(i.value,10)||0; i.value=Math.min('+max+',n+1);">+</button>' +
+                '</div>';
+        }
+        
+        async function loadWeights() {
+            try {
+                const [res, petsRes] = await Promise.all([fetch(API + '/gm/weights'), fetch(API + '/gm/pets')]);
+                const data = await res.json();
+                if (!data.success) { document.getElementById('weightsCapsuleList').innerHTML = '<tr><td colspan="2">加载失败</td></tr>'; return; }
+                const capsules = data.capsuleCatchRates || [];
+                const fusion = data.fusionSuccessRates || [];
+                const petIdToName = {};
+                let weightsPetList = [];
+                if (petsRes.ok) {
+                    const petsData = await petsRes.json();
+                    if (petsData.success && Array.isArray(petsData.data)) {
+                        weightsPetList = petsData.data;
+                        petsData.data.forEach(function(p) { petIdToName[p.id] = p.name || ''; });
+                    }
+                }
+                window._petIdToName = petIdToName;
+                window._weightsPetList = weightsPetList;
+                const tbodyC = document.getElementById('weightsCapsuleList');
+                tbodyC.innerHTML = capsules.map(function(c) {
+                    const id = 'cap_' + String(c.itemID);
+                    return '<tr><td>' + (c.name || '') + '</td><td class="num-cell">' + numSpinHtml(id, c.rate, 0, 100) + '</td></tr>';
+                }).join('') || '<tr><td colspan="2">暂无数据</td></tr>';
+                capsules.forEach(function(c) { c._inputId = 'cap_' + String(c.itemID); });
+                window._weightsCapsules = capsules;
+                fusion.forEach(function(f) {
+                    const sid = String(f.itemID);
+                    f._idR = 'fusion_r_' + sid; f._idT = 'fusion_t_' + sid; f._idV = 'fusion_v_' + sid;
+                    if (!f.rewardPets) f.rewardPets = [];
+                });
+                window._weightsFusion = fusion;
+                renderWeightsFusionRows();
+            } catch (e) {
+                document.getElementById('weightsCapsuleList').innerHTML = '<tr><td colspan="2">加载失败: ' + e.message + '</td></tr>';
+                document.getElementById('weightsFusionList').innerHTML = '<tr><td colspan="5">加载失败</td></tr>';
+            }
+        }
+        
+        function renderWeightsFusionRows() {
+            const fusion = window._weightsFusion || [];
+            const petIdToName = window._petIdToName || {};
+            fusion.forEach(function(f) {
+                const r = document.getElementById(f._idR), t = document.getElementById(f._idT), v = document.getElementById(f._idV);
+                if (r) f.rate = Math.max(0, Math.min(100, parseInt(r.value, 10) || 0));
+                if (t) f.transmuteTm = Math.max(0, parseInt(t.value, 10) || 0);
+                if (v) f.vipTransmuteTm = Math.max(0, parseInt(v.value, 10) || 0);
+            });
+            const tbodyF = document.getElementById('weightsFusionList');
+            if (!tbodyF) return;
+            if (fusion.length === 0) { tbodyF.innerHTML = '<tr><td colspan="5" class="text-muted">暂无数据</td></tr>'; return; }
+            tbodyF.innerHTML = fusion.map(function(f, rowIndex) {
+                const sid = String(f.itemID);
+                const idR = f._idR, idT = f._idT, idV = f._idV;
+                const rewardList = (f.rewardPets || []).map(function(r, rIdx) {
+                    const name = petIdToName[r.petClass] || ('ID:' + r.petClass);
+                    const wId = 'reward_w_' + sid + '_' + rIdx;
+                    return '<span class="fusion-b-tag me-1 mb-1">' + name + ' <input type="number" class="reward-weight-input" id="' + wId + '" value="' + (r.weight || 1) + '" min="1" style="width:48px;padding:2px 4px;font-size:12px;" onchange="updateRewardWeight(' + rowIndex + ',' + rIdx + ', this.value)"> <span class="fusion-b-remove" onclick="removeRewardPet(' + rowIndex + ',' + rIdx + ')" title="删除">×</span></span>';
+                }).join('');
+                const addBtn = '<button type="button" class="kyse-btn kyse-btn-secondary btn-sm" onclick="openAddRewardModal(' + rowIndex + ')">添加精灵</button>';
+                const col5 = '<td class="align-top"><div class="fusion-b-tags mb-1">' + rewardList + '</div><div>' + addBtn + '</div></td>';
+                return '<tr><td>' + (f.name || '') + '</td><td class="num-cell">' + numSpinHtml(idR, f.rate, 0, 100) + '</td>' +
+                    '<td class="num-cell">' + numSpinHtml(idT, f.transmuteTm, 0, 999999) + '</td>' +
+                    '<td class="num-cell">' + numSpinHtml(idV, f.vipTransmuteTm, 0, 999999) + '</td>' + col5 + '</tr>';
+            }).join('');
+        }
+        
+        function openAddRewardModal(rowIndex) {
+            const fusion = window._weightsFusion || [];
+            const f = fusion[rowIndex];
+            if (!f) return;
+            currentRewardRowIndex = rowIndex;
+            pendingRewardPets = [];
+            document.getElementById('addRewardPetSoulName').textContent = f.name || ('元神珠 ' + f.itemID);
+            const list = window._weightsPetList || [];
+            const dl = document.getElementById('addRewardPetList');
+            if (dl) dl.innerHTML = list.map(function(p) { return '<option value="' + p.id + '">' + (p.name || '') + ' (ID:' + p.id + ')'; }).join('');
+            document.getElementById('addRewardPetInput').value = '';
+            document.getElementById('addRewardPetWeight').value = '1';
+            renderRewardPetPendingList();
+            addRewardPetModalInstance.show();
+        }
+        
+        function renderRewardPetPendingList() {
+            const el = document.getElementById('addRewardPetPendingList');
+            if (!el) return;
+            if (pendingRewardPets.length === 0) { el.innerHTML = '<span class="text-muted">暂未添加，输入上方精灵并点「添加精灵」</span>'; return; }
+            el.innerHTML = pendingRewardPets.map(function(r, i) {
+                return '<span class="fusion-b-tag me-1 mb-1">' + (r.name || 'ID:' + r.petClass) + ' 权重' + r.weight + ' <span class="fusion-b-remove" onclick="removePendingRewardPet(' + i + ')" title="移除">×</span></span>';
+            }).join('');
+        }
+        
+        function addRewardPetToPending() {
+            const input = document.getElementById('addRewardPetInput');
+            const v = (input && input.value) ? input.value.trim() : '';
+            let petId = parseInt(v, 10) || 0;
+            if (!petId && v) {
+                const list = window._weightsPetList || [];
+                const found = list.find(function(p) { return (p.name || '').indexOf(v) >= 0 || String(p.id) === v; });
+                if (found) petId = found.id;
+            }
+            const weight = Math.max(1, parseInt(document.getElementById('addRewardPetWeight').value, 10) || 1);
+            if (!petId) { alert('请输入或选择有效精灵'); return; }
+            const list = window._weightsPetList || [];
+            const pet = list.find(function(p) { return p.id === petId; });
+            const name = pet ? pet.name : '';
+            if (pendingRewardPets.some(function(r) { return r.petClass === petId; })) { alert('该精灵已在待选列表中'); return; }
+            pendingRewardPets.push({ petClass: petId, weight: weight, name: name });
+            if (input) input.value = '';
+            document.getElementById('addRewardPetWeight').value = '1';
+            renderRewardPetPendingList();
+        }
+        
+        function removePendingRewardPet(index) {
+            if (index >= 0 && index < pendingRewardPets.length) {
+                pendingRewardPets.splice(index, 1);
+                renderRewardPetPendingList();
+            }
+        }
+        
+        function confirmRewardPetsAndClose() {
+            const fusion = window._weightsFusion || [];
+            if (currentRewardRowIndex < 0 || currentRewardRowIndex >= fusion.length) { addRewardPetModalInstance.hide(); return; }
+            const f = fusion[currentRewardRowIndex];
+            if (!f.rewardPets) f.rewardPets = [];
+            pendingRewardPets.forEach(function(r) {
+                if (!f.rewardPets.some(function(x) { return x.petClass === r.petClass; })) {
+                    f.rewardPets.push({ petClass: r.petClass, weight: r.weight });
+                }
+            });
+            pendingRewardPets = [];
+            renderWeightsFusionRows();
+            addRewardPetModalInstance.hide();
+        }
+        
+        function removeRewardPet(rowIndex, rIndex) {
+            const fusion = window._weightsFusion || [];
+            if (rowIndex < 0 || rowIndex >= fusion.length) return;
+            const f = fusion[rowIndex];
+            if (f.rewardPets && rIndex >= 0 && rIndex < f.rewardPets.length) {
+                f.rewardPets.splice(rIndex, 1);
+                renderWeightsFusionRows();
+            }
+        }
+        
+        function updateRewardWeight(rowIndex, rIndex, val) {
+            const fusion = window._weightsFusion || [];
+            if (rowIndex < 0 || rowIndex >= fusion.length) return;
+            const f = fusion[rowIndex];
+            if (f.rewardPets && rIndex >= 0 && rIndex < f.rewardPets.length) {
+                const w = Math.max(1, parseInt(val, 10) || 1);
+                f.rewardPets[rIndex].weight = w;
+            }
+        }
+        
+        let fusionRules = [];
+        let fusionPets = [];
+        let fusionSoulPearls = [];
+        let fusionBSelected = [];
+        
+        async function loadFusion() {
+            try {
+                const [rulesRes, petsRes, soulRes] = await Promise.all([
+                    fetch(API + '/gm/fusion/rules'),
+                    fetch(API + '/gm/pets'),
+                    fetch(API + '/gm/soulpearls')
+                ]);
+                const rulesData = await rulesRes.json();
+                const petsData = await petsRes.json();
+                const soulData = await soulRes.json();
+                if (petsData.success && Array.isArray(petsData.data)) fusionPets = petsData.data;
+                else fusionPets = [];
+                if (soulData.success && soulData.data) fusionSoulPearls = soulData.data;
+                else fusionSoulPearls = [];
+                if (rulesData.success && rulesData.data && rulesData.data.length > 0) {
+                    var raw = rulesData.data;
+                    var keyToRule = {};
+                    raw.forEach(function(e) {
+                        var key = e.petIdA + '_' + e.soulPearlId;
+                        if (!keyToRule[key]) {
+                            keyToRule[key] = { petIdA: e.petIdA, petNameA: e.petNameA || '', soulPearlId: e.soulPearlId, soulPearlName: e.soulPearlName || '', petIdsB: [], petNamesB: [] };
+                        }
+                        keyToRule[key].petIdsB.push(e.petIdB);
+                        keyToRule[key].petNamesB.push(e.petNameB || '');
+                    });
+                    fusionRules = [];
+                    for (var k in keyToRule) fusionRules.push(keyToRule[k]);
+                } else fusionRules = [];
+                fusionBSelected = [];
+                renderFusionTable();
+                renderFusionBSelected();
+                var listA = document.getElementById('fusionPetListA');
+                if (listA) listA.innerHTML = fusionPets.map(function(p) { return '<option value="' + p.id + '">' + (p.name || '') + ' (ID:' + p.id + ')'; }).join('');
+                var listB = document.getElementById('fusionPetListB');
+                if (listB) listB.innerHTML = fusionPets.map(function(p) { return '<option value="' + p.id + '">' + (p.name || '') + ' (ID:' + p.id + ')'; }).join('');
+                var listSoul = document.getElementById('fusionSoulPearlList');
+                if (listSoul) listSoul.innerHTML = fusionSoulPearls.map(function(s) { return '<option value="' + s.itemID + '">' + (s.name || '') + ' (ID:' + s.itemID + ')'; }).join('');
+            } catch (e) {
+                document.getElementById('fusionRulesList').innerHTML = '<tr><td colspan="4">加载失败: ' + e.message + '</td></tr>';
+            }
+        }
+        
+        function renderFusionBSelected() {
+            var el = document.getElementById('fusionBSelectedList');
+            if (!el) return;
+            el.innerHTML = fusionBSelected.map(function(b, i) {
+                return '<span class="fusion-b-tag">' + (b.name || b.id) + ' <span class="fusion-b-remove" onclick="removeFusionB(' + i + ')">×</span></span>';
+            }).join('');
+        }
+        
+        function addFusionBOne() {
+            var v = (document.getElementById('fusionPetB') || {}).value.trim();
+            var id = parseInt(v, 10) || 0;
+            if (!id && v) { var found = fusionPets.find(function(p) { return (p.name || '').indexOf(v) >= 0 || String(p.id) === v; }); if (found) id = found.id; }
+            if (!id) { alert('请输入或选择有效的精灵B'); return; }
+            var p = fusionPets.find(function(x) { return x.id === id; });
+            if (fusionBSelected.some(function(b) { return b.id === id; })) { alert('该精灵B已添加'); return; }
+            fusionBSelected.push({ id: id, name: p ? p.name : '' });
+            document.getElementById('fusionPetB').value = '';
+            renderFusionBSelected();
+        }
+        
+        function removeFusionB(i) {
+            fusionBSelected.splice(i, 1);
+            renderFusionBSelected();
+        }
+        
+        function renderFusionTable() {
+            var tbody = document.getElementById('fusionRulesList');
+            if (!tbody) return;
+            if (fusionRules.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="text-muted">暂无规则，请在上方添加</td></tr>'; return; }
+            tbody.innerHTML = fusionRules.map(function(r, i) {
+                var bText = (r.petNamesB && r.petNamesB.length) ? r.petNamesB.join('、') : (r.petIdsB || []).join(',');
+                return '<tr><td>' + (r.petNameA || r.petIdA) + '</td><td>' + bText + '</td><td>' + (r.soulPearlName || r.soulPearlId) + '</td><td><button type="button" class="kyse-btn kyse-btn-danger btn-sm" onclick="deleteFusionRule(' + i + ')">删除</button></td></tr>';
+            }).join('');
+        }
+        
+        function parseFusionSoulPearlValue(v) {
+            if (!v || !v.trim()) return 0;
+            var n = parseInt(v.trim(), 10);
+            if (!isNaN(n)) return n;
+            var found = fusionSoulPearls.find(function(s) { return (s.name || '').indexOf(v) >= 0 || String(s.itemID) === v; });
+            return found ? found.itemID : 0;
+        }
+        function addFusionRule() {
+            var vA = (document.getElementById('fusionPetA') || {}).value.trim();
+            var petA = parseInt(vA, 10) || 0;
+            if (!petA && vA) { var fa = fusionPets.find(function(p) { return (p.name || '').indexOf(vA) >= 0 || String(p.id) === vA; }); if (fa) petA = fa.id; }
+            var soulId = parseFusionSoulPearlValue((document.getElementById('fusionSoulPearl') || {}).value);
+            if (!petA || !soulId) { alert('请输入或选择精灵A和元神珠'); return; }
+            if (!fusionBSelected.length) { alert('请至少添加一只精灵B（点击「添加精灵B」）'); return; }
+            var nameA = fusionPets.find(function(p) { return p.id === petA; });
+            var soul = fusionSoulPearls.find(function(s) { return s.itemID === soulId; });
+            fusionRules.push({
+                petIdA: petA,
+                petNameA: nameA ? nameA.name : '',
+                soulPearlId: soulId,
+                soulPearlName: soul ? soul.name : '',
+                petIdsB: fusionBSelected.map(function(b) { return b.id; }),
+                petNamesB: fusionBSelected.map(function(b) { return b.name || ''; })
+            });
+            fusionBSelected = [];
+            renderFusionTable();
+            renderFusionBSelected();
+            document.getElementById('fusionPetA').value = '';
+            document.getElementById('fusionSoulPearl').value = '';
+        }
+        
+        function deleteFusionRule(i) {
+            fusionRules.splice(i, 1);
+            renderFusionTable();
+        }
+        
+        async function saveFusionRules() {
+            var rules = [];
+            fusionRules.forEach(function(r) {
+                (r.petIdsB || []).forEach(function(bId) {
+                    rules.push({ petIdA: r.petIdA, petIdB: bId, soulPearlId: r.soulPearlId });
+                });
+            });
+            try {
+                var res = await fetch(API + '/gm/fusion/rules', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rules: rules })
+                });
+                var data = await res.json();
+                if (data.success) { alert('保存成功'); loadFusion(); } else alert('保存失败: ' + (data.message || ''));
+            } catch (e) { alert('保存失败: ' + e.message); }
+        }
+        
+        async function saveWeights() {
+            const capsules = window._weightsCapsules || [];
+            const fusion = window._weightsFusion || [];
+            const capsuleCatchRates = {};
+            capsules.forEach(function(c) {
+                const el = document.getElementById(c._inputId);
+                if (el) capsuleCatchRates[String(c.itemID)] = Math.max(0, Math.min(100, parseInt(el.value, 10) || 0));
+            });
+            const fusionSuccessRates = {};
+            const soulPearlTransmuteTm = {};
+            const soulPearlVipTransmuteTm = {};
+            fusion.forEach(function(f) {
+                const id = String(f.itemID);
+                const r = document.getElementById(f._idR);
+                const t = document.getElementById(f._idT);
+                const v = document.getElementById(f._idV);
+                if (r) fusionSuccessRates[id] = Math.max(0, Math.min(100, parseInt(r.value, 10) || 0));
+                if (t) soulPearlTransmuteTm[id] = Math.max(0, parseInt(t.value, 10) || 0);
+                if (v) soulPearlVipTransmuteTm[id] = Math.max(0, parseInt(v.value, 10) || 0);
+            });
+            const soulPearlRewardPets = {};
+            fusion.forEach(function(f) {
+                const id = String(f.itemID);
+                soulPearlRewardPets[id] = (f.rewardPets || []).map(function(r) { return { petClass: r.petClass, weight: Math.max(1, parseInt(r.weight, 10) || 1) }; });
+            });
+            try {
+                const res = await fetch(API + '/gm/weights', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        capsuleCatchRates: capsuleCatchRates,
+                        fusionSuccessRates: fusionSuccessRates,
+                        soulPearlTransmuteTm: soulPearlTransmuteTm,
+                        soulPearlVipTransmuteTm: soulPearlVipTransmuteTm,
+                        soulPearlRewardPets: soulPearlRewardPets
+                    })
+                });
+                const data = await res.json();
+                if (data.success) alert('保存成功'); else alert('保存失败: ' + (data.message || ''));
+            } catch (e) { alert('保存失败: ' + e.message); }
+        }
+
+        // ===== BUFF 道具 / 奖励配置 =====
+        let buffItemsConfig = null;
+        let rewardConfig = null;
+
+        async function loadBuffItems() {
+            try {
+                const res = await fetch(API + '/gm/buff-items');
+                const data = await res.json();
+                if (!data.success) throw new Error(data.message || '加载失败');
+                buffItemsConfig = data.data || {};
+                if (!buffItemsConfig.speedupItems) buffItemsConfig.speedupItems = [];
+                if (!buffItemsConfig.autoFightItems) buffItemsConfig.autoFightItems = [];
+                if (!buffItemsConfig.energyItems) buffItemsConfig.energyItems = [];
+                if (!buffItemsConfig.studyItems) buffItemsConfig.studyItems = [];
+                renderBuffTables();
+            } catch (e) {
+                alert('加载 BUFF 配置失败: ' + e.message);
+            }
+        }
+
+        function renderBuffTables() {
+            // Speedup
+            const sBody = document.getElementById('buffSpeedupList');
+            if (sBody) {
+                sBody.innerHTML = (buffItemsConfig.speedupItems || []).map(function (it, idx) {
+                    return '<tr>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.itemId || it.ItemID || 0) + '" oninput="updateBuffField(\'speedupItems\',' + idx + ',\'itemId\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.twoTimesAdd || 0) + '" oninput="updateBuffField(\'speedupItems\',' + idx + ',\'twoTimesAdd\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.threeTimesAdd || 0) + '" oninput="updateBuffField(\'speedupItems\',' + idx + ',\'threeTimesAdd\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.maxTwoTimes || 0) + '" oninput="updateBuffField(\'speedupItems\',' + idx + ',\'maxTwoTimes\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.maxThreeTimes || 0) + '" oninput="updateBuffField(\'speedupItems\',' + idx + ',\'maxThreeTimes\',this.value)"></td>' +
+                        '<td><button type="button" class="kyse-btn kyse-btn-danger kyse-btn-sm" onclick="removeBuffRow(\'speedupItems\',' + idx + ')">删除</button></td>' +
+                        '</tr>';
+                }).join('') || '<tr><td colspan="6" class="text-muted">暂无配置，点击「添加行」新增</td></tr>';
+            }
+            // AutoFight
+            const aBody = document.getElementById('buffAutoFightList');
+            if (aBody) {
+                aBody.innerHTML = (buffItemsConfig.autoFightItems || []).map(function (it, idx) {
+                    return '<tr>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.itemId || it.ItemID || 0) + '" oninput="updateBuffField(\'autoFightItems\',' + idx + ',\'itemId\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.timesAdd || 0) + '" oninput="updateBuffField(\'autoFightItems\',' + idx + ',\'timesAdd\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.maxTimes || 0) + '" oninput="updateBuffField(\'autoFightItems\',' + idx + ',\'maxTimes\',this.value)"></td>' +
+                        '<td><input type="checkbox" ' + (it.enableAutoFight || it.Enable ? 'checked' : '') + ' onchange="updateBuffField(\'autoFightItems\',' + idx + ',\'enableAutoFight\',this.checked)"></td>' +
+                        '<td><button type="button" class="kyse-btn kyse-btn-danger kyse-btn-sm" onclick="removeBuffRow(\'autoFightItems\',' + idx + ')">删除</button></td>' +
+                        '</tr>';
+                }).join('') || '<tr><td colspan="5" class="text-muted">暂无配置，点击「添加行」新增</td></tr>';
+            }
+            // Energy
+            const eBody = document.getElementById('buffEnergyList');
+            if (eBody) {
+                eBody.innerHTML = (buffItemsConfig.energyItems || []).map(function (it, idx) {
+                    return '<tr>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.itemId || it.ItemID || 0) + '" oninput="updateBuffField(\'energyItems\',' + idx + ',\'itemId\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.timesAdd || 0) + '" oninput="updateBuffField(\'energyItems\',' + idx + ',\'timesAdd\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.maxTimes || 0) + '" oninput="updateBuffField(\'energyItems\',' + idx + ',\'maxTimes\',this.value)"></td>' +
+                        '<td><button type="button" class="kyse-btn kyse-btn-danger kyse-btn-sm" onclick="removeBuffRow(\'energyItems\',' + idx + ')">删除</button></td>' +
+                        '</tr>';
+                }).join('') || '<tr><td colspan="4" class="text-muted">暂无配置，点击「添加行」新增</td></tr>';
+            }
+            // Study
+            const stBody = document.getElementById('buffStudyList');
+            if (stBody) {
+                stBody.innerHTML = (buffItemsConfig.studyItems || []).map(function (it, idx) {
+                    return '<tr>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.itemId || it.ItemID || 0) + '" oninput="updateBuffField(\'studyItems\',' + idx + ',\'itemId\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.timesAdd || 0) + '" oninput="updateBuffField(\'studyItems\',' + idx + ',\'timesAdd\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (it.maxTimes || 0) + '" oninput="updateBuffField(\'studyItems\',' + idx + ',\'maxTimes\',this.value)"></td>' +
+                        '<td><button type="button" class="kyse-btn kyse-btn-danger kyse-btn-sm" onclick="removeBuffRow(\'studyItems\',' + idx + ')">删除</button></td>' +
+                        '</tr>';
+                }).join('') || '<tr><td colspan="4" class="text-muted">暂无配置，点击「添加行」新增</td></tr>';
+            }
+        }
+
+        function updateBuffField(section, idx, field, val) {
+            if (!buffItemsConfig || !buffItemsConfig[section] || !buffItemsConfig[section][idx]) return;
+            const item = buffItemsConfig[section][idx];
+            if (field === 'itemId') {
+                item.itemId = parseInt(val, 10) || 0;
+            } else if (field === 'enableAutoFight') {
+                item.enableAutoFight = !!val;
+            } else {
+                item[field] = parseInt(val, 10) || 0;
+            }
+        }
+
+        function removeBuffRow(section, idx) {
+            if (!buffItemsConfig || !buffItemsConfig[section]) return;
+            buffItemsConfig[section].splice(idx, 1);
+            renderBuffTables();
+        }
+
+        function addBuffSpeedupRow() {
+            if (!buffItemsConfig) buffItemsConfig = {};
+            if (!buffItemsConfig.speedupItems) buffItemsConfig.speedupItems = [];
+            buffItemsConfig.speedupItems.push({ itemId: 0, twoTimesAdd: 1, threeTimesAdd: 0, maxTwoTimes: 0, maxThreeTimes: 0 });
+            renderBuffTables();
+        }
+        function addBuffAutoFightRow() {
+            if (!buffItemsConfig) buffItemsConfig = {};
+            if (!buffItemsConfig.autoFightItems) buffItemsConfig.autoFightItems = [];
+            buffItemsConfig.autoFightItems.push({ itemId: 0, timesAdd: 1, maxTimes: 0, enableAutoFight: true });
+            renderBuffTables();
+        }
+        function addBuffEnergyRow() {
+            if (!buffItemsConfig) buffItemsConfig = {};
+            if (!buffItemsConfig.energyItems) buffItemsConfig.energyItems = [];
+            buffItemsConfig.energyItems.push({ itemId: 0, timesAdd: 1, maxTimes: 0 });
+            renderBuffTables();
+        }
+        function addBuffStudyRow() {
+            if (!buffItemsConfig) buffItemsConfig = {};
+            if (!buffItemsConfig.studyItems) buffItemsConfig.studyItems = [];
+            buffItemsConfig.studyItems.push({ itemId: 0, timesAdd: 1, maxTimes: 0 });
+            renderBuffTables();
+        }
+
+        async function saveBuffItems() {
+            try {
+                const res = await fetch(API + '/gm/buff-items', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buffItemsConfig || {})
+                });
+                const data = await res.json();
+                if (data.success) alert('BUFF 配置保存成功'); else alert('保存失败: ' + (data.message || ''));
+            } catch (e) {
+                alert('保存失败: ' + e.message);
+            }
+        }
+
+        async function loadRewards() {
+            try {
+                const res = await fetch(API + '/gm/rewards');
+                const data = await res.json();
+                if (!data.success) throw new Error(data.message || '加载失败');
+                rewardConfig = data.data || {};
+                if (!rewardConfig.collectRewards) rewardConfig.collectRewards = [];
+                if (!rewardConfig.roweiRewards) rewardConfig.roweiRewards = { baseExp: 0, expPerHour: 0, coinPerHour: 0 };
+                renderRewardTables();
+            } catch (e) {
+                alert('加载奖励配置失败: ' + e.message);
+            }
+        }
+
+        function renderRewardTables() {
+            const tbody = document.getElementById('rewardCollectList');
+            if (tbody) {
+                const list = rewardConfig.collectRewards || [];
+                tbody.innerHTML = list.map(function (r, idx) {
+                    return '<tr>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (r.activityId || r.ActivityID || 0) + '" oninput="updateRewardField(\'collectRewards\',' + idx + ',\'activityId\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (r.petId || r.PetID || 0) + '" oninput="updateRewardField(\'collectRewards\',' + idx + ',\'petId\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (r.level || 0) + '" oninput="updateRewardField(\'collectRewards\',' + idx + ',\'level\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (r.dv || 0) + '" oninput="updateRewardField(\'collectRewards\',' + idx + ',\'dv\',this.value)"></td>' +
+                        '<td><input type="number" class="form-control form-control-sm" value="' + (r.nature || 0) + '" oninput="updateRewardField(\'collectRewards\',' + idx + ',\'nature\',this.value)"></td>' +
+                        '<td><button type="button" class="kyse-btn kyse-btn-danger kyse-btn-sm" onclick="removeRewardRow(\'collectRewards\',' + idx + ')">删除</button></td>' +
+                        '</tr>';
+                }).join('') || '<tr><td colspan="6" class="text-muted">暂无配置，点击「添加行」新增</td></tr>';
+            }
+            // Rowei rewards
+            const rowei = rewardConfig.roweiRewards || {};
+            const baseExpEl = document.getElementById('roweiBaseExp');
+            const expHourEl = document.getElementById('roweiExpPerHour');
+            const coinHourEl = document.getElementById('roweiCoinPerHour');
+            if (baseExpEl) baseExpEl.value = rowei.baseExp || 0;
+            if (expHourEl) expHourEl.value = rowei.expPerHour || 0;
+            if (coinHourEl) coinHourEl.value = rowei.coinPerHour || 0;
+        }
+
+        function updateRewardField(section, idx, field, val) {
+            if (!rewardConfig || !rewardConfig[section] || !rewardConfig[section][idx]) return;
+            const item = rewardConfig[section][idx];
+            if (field === 'activityId' || field === 'petId') {
+                item[field] = parseInt(val, 10) || 0;
+            } else {
+                item[field] = parseInt(val, 10) || 0;
+            }
+        }
+
+        function removeRewardRow(section, idx) {
+            if (!rewardConfig || !rewardConfig[section]) return;
+            rewardConfig[section].splice(idx, 1);
+            renderRewardTables();
+        }
+
+        function addRewardCollectRow() {
+            if (!rewardConfig) rewardConfig = {};
+            if (!rewardConfig.collectRewards) rewardConfig.collectRewards = [];
+            rewardConfig.collectRewards.push({ activityId: 0, petId: 0, level: 5, dv: 31, nature: 0 });
+            renderRewardTables();
+        }
+
+        async function saveRewards() {
+            // 同步罗威奖励输入框
+            if (!rewardConfig) rewardConfig = {};
+            if (!rewardConfig.roweiRewards) rewardConfig.roweiRewards = {};
+            const baseExpEl = document.getElementById('roweiBaseExp');
+            const expHourEl = document.getElementById('roweiExpPerHour');
+            const coinHourEl = document.getElementById('roweiCoinPerHour');
+            rewardConfig.roweiRewards.baseExp = parseInt(baseExpEl && baseExpEl.value, 10) || 0;
+            rewardConfig.roweiRewards.expPerHour = parseInt(expHourEl && expHourEl.value, 10) || 0;
+            rewardConfig.roweiRewards.coinPerHour = parseInt(coinHourEl && coinHourEl.value, 10) || 0;
+
+            try {
+                const res = await fetch(API + '/gm/rewards', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(rewardConfig || {})
+                });
+                const data = await res.json();
+                if (data.success) alert('奖励配置保存成功'); else alert('保存失败: ' + (data.message || ''));
+            } catch (e) {
+                alert('保存失败: ' + e.message);
+            }
+        }
+        
+        async function loadDashboard() {
+            try {
+                const [usersRes, statusRes] = await Promise.all([
+                    fetch(`${API}/gm/users`),
+                    fetch(`${API}/gm/server/status`)
+                ]);
+                const usersData = await usersRes.json();
+                const statusData = await statusRes.json();
+                if(usersData.success) {
+                    document.getElementById('totalUsers').textContent = usersData.data.length;
+                    document.getElementById('totalPets').textContent = usersData.data.reduce((sum, u) => sum + (u.petCount||0), 0);
+                    document.getElementById('totalCoins').textContent = usersData.data.reduce((sum, u) => sum + (u.coins||0), 0);
+                }
+                if(statusData.success && statusData.data) {
+                    document.getElementById('onlineUsers').textContent = statusData.data.onlinePlayers != null ? statusData.data.onlinePlayers : 0;
+                    const db = statusData.data.database;
+                    const el = document.getElementById('dashboardDatabaseInfo');
+                    if(db && db.connected) {
+                        if(db.type === 'mysql' && db.host) {
+                            el.textContent = '数据源: MySQL ' + db.host + '/' + (db.database||'seer') + ' 已连接';
+                        } else {
+                            el.textContent = '当前使用本地文件模式（数据源: 本地 users.json）';
+                        }
+                    } else {
+                        el.textContent = '';
+                    }
+                }
+            } catch(e) { console.error(e); }
+        }
+        
+        async function loadUsers() {
+            try {
+                const keyword = document.getElementById('searchKeyword').value.trim();
+                const url = keyword ? `${API}/gm/users?keyword=${encodeURIComponent(keyword)}` : `${API}/gm/users`;
+                const res = await fetch(url);
+                const data = await res.json();
+                if(data.success) {
+                    usersData = data.data;
+                    const html = data.data.map(u => `
+                        <div class="user-item" onclick="showUserDetail(${u.userId})">
+                            <strong>${u.nickname || '未命名'}</strong> (ID: ${u.userId})<br>
+                            <small>💰 ${u.coins} | 💎 ${u.gold} | 🥚 ${u.petCount}</small>
+                        </div>
+                    `).join('');
+                    document.getElementById('userList').innerHTML = html;
+                }
+            } catch(e) { alert('加载失败: ' + e.message); }
+        }
+        
+        async function showUserDetail(userId) {
+            currentUserId = userId;
+            try {
+                const res = await fetch(`${API}/gm/user/?userId=${userId}`);
+                const data = await res.json();
+                if(data.success) {
+                    document.getElementById('userDetail').style.display = 'block';
+                    document.getElementById('detailUserId').textContent = data.user.userId;
+                    document.getElementById('detailEmail').textContent = data.user.email;
+                    document.getElementById('detailNick').value = data.gameData.nick;
+                    document.getElementById('detailCoins').value = data.gameData.coins;
+                    document.getElementById('detailGold').value = data.gameData.gold;
+                    document.getElementById('detailEnergy').value = data.gameData.energy;
+                    document.getElementById('detailExpPool').textContent = data.gameData.expPool != null ? data.gameData.expPool : 0;
+                    document.getElementById('expSetValue').value = data.gameData.expPool != null ? data.gameData.expPool : '';
+                    
+                    window.__petSkillNames = data.gameData.petSkillNames || {};
+                    const skillNamesMap = data.gameData.petSkillNames || {};
+                    const petsHtml = data.gameData.pets.map(p => {
+                        const names = skillNamesMap[String(p.catchTime)] || [];
+                        const skillText = (p.skills && p.skills.length) ? p.skills.map((s,i) => s ? (names[i] ? names[i]+'('+s+')' : s) : '').filter(Boolean).join('、') : '默认';
+                        const natureNameMap = {
+                            0: '孤独 - 攻击↑ 防御↓', 1: '勇敢 - 攻击↑ 速度↓', 2: '固执 - 攻击↑ 特攻↓', 3: '调皮 - 攻击↑ 特防↓',
+                            4: '胆小 - 速度↑ 攻击↓', 5: '急躁 - 速度↑ 防御↓', 6: '开朗 - 速度↑ 特攻↓', 7: '天真 - 速度↑ 特防↓',
+                            8: '大胆 - 防御↑ 攻击↓', 9: '悠闲 - 防御↑ 速度↓', 10: '顽皮 - 防御↑ 特攻↓', 11: '无虑 - 防御↑ 特防↓',
+                            12: '保守 - 特攻↑ 攻击↓', 13: '稳重 - 特攻↑ 防御↓', 14: '冷静 - 特攻↑ 速度↓', 15: '马虎 - 特攻↑ 特防↓',
+                            16: '沉着 - 特防↑ 攻击↓', 17: '温顺 - 特防↑ 防御↓', 18: '狂妄 - 特防↑ 速度↓', 19: '慎重 - 特防↑ 特攻↓',
+                            20: '害羞 - 平衡', 21: '浮躁 - 平衡', 22: '坦率 - 平衡', 23: '实干 - 平衡', 24: '认真 - 平衡'
+                        };
+                        const natureId = (p.nature != null ? p.nature : 0);
+                        const natureLabel = natureNameMap[natureId] || (natureId + ' - 未知');
+                        return `
+                        <div class="pet-card d-flex justify-content-between align-items-center">
+                            <div>
+                                <strong>${p.name || '未知精灵'} (ID: ${p.id})</strong><br>
+                                等级: ${p.level} | 性格: ${natureId} - ${natureLabel} | DV: ${p.dv} | catchTime: ${p.catchTime}<br>
+                                特性: ${p.trait ? p.trait : '无'}<br>
+                                技能: ${skillText}
+                            </div>
+                            <div>
+                                <button class="btn btn-warning btn-sm me-1" onclick="showEditPetSkillsModal(${p.catchTime}, [${(p.skills||[]).join(',')}])">修改技能</button>
+                                <button class="btn btn-secondary btn-sm me-1" onclick="showEditPetTraitModal(${p.catchTime}, ${p.trait || 0})">修改特性</button>
+                                <button class="btn btn-info btn-sm me-1" onclick="showEditPetNatureModal(${p.catchTime}, ${p.nature ?? 0})">修改性格</button>
+                                <button class="btn btn-danger btn-sm" onclick="deletePet(${p.catchTime}, false)">删除精灵</button>
+                            </div>
+                        </div>
+                    `}).join('');
+                    document.getElementById('userPets').innerHTML = petsHtml || '<p class="text-muted">暂无精灵</p>';
+                    
+                    const itemsHtml = Object.entries(data.gameData.items || {}).map(([id, item]) => `
+                        <div class="item-box">
+                            <div><strong>${item.name || '未知道具'}</strong></div>
+                            <div>ID: ${id}</div>
+                            <div>x${item.count}</div>
+                            <div class="mt-2">
+                                <button class="btn btn-danger btn-sm" onclick="deleteItem(${parseInt(id, 10)})">删除</button>
+                            </div>
+                        </div>
+                    `).join('');
+                    document.getElementById('userItems').innerHTML = itemsHtml || '<p class="text-muted">暂无物品</p>';
+                    
+                    const storageHtml = (data.gameData.storagePets || []).map(p => {
+                        const names = skillNamesMap[String(p.catchTime)] || [];
+                        const skillText = (p.skills && p.skills.length) ? p.skills.map((s,i) => s ? (names[i] ? names[i]+'('+s+')' : s) : '').filter(Boolean).join('、') : '默认';
+                        const natureNameMap = {
+                            0: '孤独 - 攻击↑ 防御↓', 1: '勇敢 - 攻击↑ 速度↓', 2: '固执 - 攻击↑ 特攻↓', 3: '调皮 - 攻击↑ 特防↓',
+                            4: '胆小 - 速度↑ 攻击↓', 5: '急躁 - 速度↑ 防御↓', 6: '开朗 - 速度↑ 特攻↓', 7: '天真 - 速度↑ 特防↓',
+                            8: '大胆 - 防御↑ 攻击↓', 9: '悠闲 - 防御↑ 速度↓', 10: '顽皮 - 防御↑ 特攻↓', 11: '无虑 - 防御↑ 特防↓',
+                            12: '保守 - 特攻↑ 攻击↓', 13: '稳重 - 特攻↑ 防御↓', 14: '冷静 - 特攻↑ 速度↓', 15: '马虎 - 特攻↑ 特防↓',
+                            16: '沉着 - 特防↑ 攻击↓', 17: '温顺 - 特防↑ 防御↓', 18: '狂妄 - 特防↑ 速度↓', 19: '慎重 - 特防↑ 特攻↓',
+                            20: '害羞 - 平衡', 21: '浮躁 - 平衡', 22: '坦率 - 平衡', 23: '实干 - 平衡', 24: '认真 - 平衡'
+                        };
+                        const natureId = (p.nature != null ? p.nature : 0);
+                        const natureLabel = natureNameMap[natureId] || (natureId + ' - 未知');
+                        return `
+                        <div class="pet-card d-flex justify-content-between align-items-center">
+                            <div>
+                                <strong>${p.name || '未知精灵'} (ID: ${p.id})</strong><br>
+                                等级: ${p.level} | 性格: ${natureId} - ${natureLabel} | catchTime: ${p.catchTime}<br>
+                                特性: ${p.trait ? p.trait : '无'}<br>
+                                技能: ${skillText}
+                            </div>
+                            <div>
+                                <button class="btn btn-warning btn-sm me-1" onclick="showEditPetSkillsModal(${p.catchTime}, [${(p.skills||[]).join(',')}])">修改技能</button>
+                                <button class="btn btn-secondary btn-sm me-1" onclick="showEditPetTraitModal(${p.catchTime}, ${p.trait || 0}, true)">修改特性</button>
+                                <button class="btn btn-info btn-sm me-1" onclick="showEditPetNatureModal(${p.catchTime}, ${p.nature ?? 0}, true)">修改性格</button>
+                                <button class="btn btn-danger btn-sm" onclick="deletePet(${p.catchTime}, true)">删除精灵</button>
+                            </div>
+                        </div>
+                    `}).join('');
+                    document.getElementById('storagePets').innerHTML = storageHtml || '<p class="text-muted">仓库为空</p>';
+                }
+            } catch(e) { alert('加载失败: ' + e.message); }
+        }
+        
+        async function saveUserInfo() {
+            try {
+                const res = await fetch(`${API}/gm/user/update`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        userId: currentUserId,
+                        nickname: document.getElementById('detailNick').value,
+                        coins: parseInt(document.getElementById('detailCoins').value),
+                        gold: parseInt(document.getElementById('detailGold').value),
+                        energy: parseInt(document.getElementById('detailEnergy').value)
+                    })
+                });
+                const data = await res.json();
+                alert(data.success ? '保存成功' : data.message);
+                if(data.success) { loadUsers(); showUserDetail(currentUserId); }
+            } catch(e) { alert('保存失败: ' + e.message); }
+        }
+        
+        function showAddPetModal() {
+            if(!currentUserId) return alert('请先选择用户');
+            addPetModalInstance.show();
+        }
+        
+        async function addPet() {
+            try {
+                const traitSelect = document.getElementById('addPetTrait');
+                const natureSelect = document.getElementById('addPetNature');
+                const traitVal = traitSelect ? traitSelect.value.trim() : '';
+                const natureVal = natureSelect ? natureSelect.value.trim() : '';
+
+                let trait = 0;
+                if (traitVal === '-1') {
+                    trait = -1; // 随机分配
+                } else if (traitVal !== '') {
+                    trait = parseInt(traitVal, 10) || 0;
+                }
+                let nature = undefined;
+                if (natureVal !== '') {
+                    nature = parseInt(natureVal, 10) || 0;
+                }
+
+                const payload = {
+                    userId: currentUserId,
+                    // 支持输入 “166 闪光波克尔” 这种格式，后端仍然只接收数值 ID
+                    petId: parseInt(document.getElementById('addPetId').value),
+                    level: parseInt(document.getElementById('addPetLevel').value),
+                    trait: trait,
+                };
+                if (nature !== undefined) {
+                    payload.nature = nature;
+                }
+
+                const res = await fetch(`${API}/gm/pet/add`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                alert(data.success ? '添加成功' : data.message);
+                if(data.success) { addPetModalInstance.hide(); showUserDetail(currentUserId); }
+            } catch(e) { alert('添加失败: ' + e.message); }
+        }
+
+        // 显示修改特性弹窗
+        function showEditPetTraitModal(catchTime, currentTrait, fromStorage) {
+            document.getElementById('editTraitCatchTime').value = catchTime;
+            document.getElementById('editTraitFromStorage').value = fromStorage ? '1' : '0';
+            const sel = document.getElementById('editTraitSelect');
+            if (sel) {
+                let val = '';
+                if (currentTrait && currentTrait > 0) {
+                    val = String(currentTrait);
+                }
+                sel.value = val;
+            }
+            editPetTraitModalInstance.show();
+        }
+
+        async function savePetTrait() {
+            const catchTime = parseInt(document.getElementById('editTraitCatchTime').value, 10);
+            let traitVal = document.getElementById('editTraitSelect').value.trim();
+            let trait = 0;
+            if (traitVal === '-1') {
+                trait = -1;
+            } else if (traitVal !== '') {
+                trait = parseInt(traitVal, 10) || 0;
+            }
+            try {
+                const res = await fetch(`${API}/gm/pet/trait`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        userId: currentUserId,
+                        catchTime: catchTime,
+                        trait: trait
+                    })
+                });
+                const data = await res.json();
+                alert(data.success ? '修改成功' : (data.message || '修改失败'));
+                if (data.success) {
+                    editPetTraitModalInstance.hide();
+                    showUserDetail(currentUserId);
+                }
+            } catch (e) {
+                alert('修改失败: ' + e.message);
+            }
+        }
+
+        // 显示修改性格弹窗
+        function showEditPetNatureModal(catchTime, currentNature, fromStorage) {
+            document.getElementById('editNatureCatchTime').value = catchTime;
+            document.getElementById('editNatureFromStorage').value = fromStorage ? '1' : '0';
+            const sel = document.getElementById('editNatureSelect');
+            if (sel) {
+                sel.value = String(currentNature ?? 0);
+            }
+            editPetNatureModalInstance.show();
+        }
+
+        async function savePetNature() {
+            const catchTime = parseInt(document.getElementById('editNatureCatchTime').value, 10);
+            const natureVal = document.getElementById('editNatureSelect').value.trim();
+            const nature = parseInt(natureVal, 10) || 0;
+            try {
+                const res = await fetch(`${API}/gm/pet/nature`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        userId: currentUserId,
+                        catchTime: catchTime,
+                        nature: nature
+                    })
+                });
+                const data = await res.json();
+                alert(data.success ? '修改成功' : (data.message || '修改失败'));
+                if (data.success) {
+                    editPetNatureModalInstance.hide();
+                    showUserDetail(currentUserId);
+                }
+            } catch (e) {
+                alert('修改失败: ' + e.message);
+            }
+        }
+        
+        function showAddItemModal() {
+            if(!currentUserId) return alert('请先选择用户');
+            addItemModalInstance.show();
+        }
+        
+        async function addItem() {
+            try {
+                const res = await fetch(`${API}/gm/item/add`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        userId: currentUserId,
+                        // 支持输入 “300001 精灵胶囊” 这种格式，后端仍然只接收数值 ID
+                        itemId: parseInt(document.getElementById('addItemId').value),
+                        count: parseInt(document.getElementById('addItemCount').value)
+                    })
+                });
+                const data = await res.json();
+                alert(data.success ? '添加成功' : data.message);
+                if(data.success) { addItemModalInstance.hide(); showUserDetail(currentUserId); }
+            } catch(e) { alert('添加失败: ' + e.message); }
+        }
+
+        async function deleteItem(itemId) {
+            if (!currentUserId) return alert('请先选择用户');
+            if (!confirm(`确定删除物品 ID ${itemId} 吗？`)) return;
+            try {
+                const res = await fetch(`${API}/gm/item/delete`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ userId: currentUserId, itemId: itemId })
+                });
+                const data = await res.json();
+                alert(data.success ? '删除成功' : (data.message || '删除失败'));
+                if (data.success) { showUserDetail(currentUserId); }
+            } catch(e) { alert('删除失败: ' + e.message); }
+        }
+        
+        async function loadPetDatabase() {
+            const container = document.getElementById('petDatabase');
+            if (!container) return;
+            container.innerHTML = '<p class="text-muted">精灵列表加载中...</p>';
+            try {
+                const res = await fetch(`${API}/gm/pets`);
+                const data = await res.json();
+                if (data.success && Array.isArray(data.data)) {
+                    allPets = data.data;
+                    renderPetDatabase(allPets);
+                    // 填充添加精灵弹窗的 datalist
+                    const dl = document.getElementById('petOptions');
+                    if (dl) {
+                        dl.innerHTML = allPets.map(p => 
+                            `<option value="${p.id} ${p.name}"></option>`
+                        ).join('');
+                    }
+                } else {
+                    container.innerHTML = '<p class="text-danger">精灵列表加载失败</p>';
+                }
+            } catch (e) {
+                console.error(e);
+                container.innerHTML = '<p class="text-danger">精灵列表加载失败，请确认服务已启动</p>';
+            }
+        }
+
+        function renderPetDatabase(list) {
+            const container = document.getElementById('petDatabase');
+            if (!container) return;
+            if (!list || list.length === 0) {
+                container.innerHTML = '<p class="text-muted">暂未配置精灵名称映射</p>';
+                return;
+            }
+            container.innerHTML = list.map(p => `
+                <div class="user-item">
+                    <strong>${p.name || '未知精灵'}</strong> (ID: ${p.id})
+                </div>
+            `).join('');
+        }
+
+        async function loadItemDatabase() {
+            const container = document.getElementById('itemDatabase');
+            if (!container) return;
+            container.innerHTML = '<p class="text-muted">道具列表加载中...</p>';
+            try {
+                const res = await fetch(`${API}/gm/items`);
+                const data = await res.json();
+                if (data.success && Array.isArray(data.data)) {
+                    allItems = data.data;
+                    renderItemDatabase(allItems);
+                    const dl = document.getElementById('itemOptions');
+                    if (dl) {
+                        dl.innerHTML = allItems.map(it =>
+                            `<option value="${it.id} ${it.name}"></option>`
+                        ).join('');
+                    }
+                } else {
+                    container.innerHTML = '<p class="text-danger">道具列表加载失败</p>';
+                }
+            } catch (e) {
+                console.error(e);
+                container.innerHTML = '<p class="text-danger">道具列表加载失败，请确认服务已启动</p>';
+            }
+        }
+
+        function renderItemDatabase(list) {
+            const container = document.getElementById('itemDatabase');
+            if (!container) return;
+            if (!list || list.length === 0) {
+                container.innerHTML = '<p class="text-muted">暂未配置道具名称映射</p>';
+                return;
+            }
+            container.innerHTML = list.map(it => `
+                <div class="user-item">
+                    <strong>${it.name || '未知道具'}</strong> (ID: ${it.id})
+                </div>
+            `).join('');
+        }
+        
+        function loadMapConfig() {
+            document.getElementById('mapConfig').innerHTML = '<p class="text-muted">地图配置功能开发中...</p>';
+        }
+
+        let fightLevelData = []; // [{ level, bossIds, enemyLv, hpRatio, ..., rewardExp, rewardCoins, rewardItemId, rewardPetId }]
+        function num(v, def) { const n = parseInt(v, 10); return isNaN(n) ? def : n; }
+        async function loadFightLevel() {
+            const tbody = document.getElementById('fightLevelList');
+            if (!tbody) return;
+            try {
+                const res = await fetch(API + '/gm/fightlevel/levels');
+                const data = await res.json();
+                if (!data.success) {
+                    tbody.innerHTML = '<tr><td colspan="13">加载失败: ' + (data.message || '') + '</td></tr>';
+                    return;
+                }
+                const list = Array.isArray(data.data) ? data.data : [];
+                const byLevel = {};
+                list.forEach(e => { byLevel[e.level] = e; });
+                fightLevelData = [];
+                for (let level = 1; level <= 80; level++) {
+                    const e = byLevel[level] || {};
+                    let idsArr = [];
+                    if (Array.isArray(e.bossIds)) idsArr = e.bossIds.filter(n => !isNaN(parseInt(n, 10)) && parseInt(n, 10) > 0).map(n => parseInt(n, 10));
+                    else if (typeof e.bossIds === 'string') idsArr = e.bossIds.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n > 0);
+                    fightLevelData.push({
+                        level: level,
+                        bossIds: idsArr.length ? idsArr : (level === 1 ? [1] : []),
+                        enemyLv: num(e.enemyLv, 0),
+                        hpRatio: num(e.hpRatio, 100),
+                        atkRatio: num(e.atkRatio, 100),
+                        defRatio: num(e.defRatio, 100),
+                        saRatio: num(e.saRatio, 100),
+                        sdRatio: num(e.sdRatio, 100),
+                        spRatio: num(e.spRatio, 100),
+                        rewardExp: num(e.rewardExp, 0),
+                        rewardCoins: num(e.rewardCoins, 0),
+                        rewardItemId: num(e.rewardItemId, 0),
+                        rewardPetId: num(e.rewardPetId, 0)
+                    });
+                }
+                renderFightLevelTable();
+            } catch (e) {
+                tbody.innerHTML = '<tr><td colspan="13">加载失败: ' + e.message + '</td></tr>';
+            }
+        }
+        function renderFightLevelTable() {
+            const tbody = document.getElementById('fightLevelList');
+            if (!tbody) return;
+            const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+            tbody.innerHTML = fightLevelData.map(row => {
+                const idsStr = (row.bossIds || []).join(', ');
+                const l = row.level;
+                return '<tr><td>' + l + '</td>' +
+                    '<td><input type="text" class="kyse-input form-control form-control-sm" data-level="' + l + '" data-field="bossIds" value="' + esc(idsStr) + '" placeholder="1,2,3"></td>' +
+                    '<td><input type="number" class="form-control form-control-sm" data-level="' + l + '" data-field="enemyLv" value="' + (row.enemyLv || 0) + '" min="0" max="100" title="0=自动"></td>' +
+                    '<td><input type="number" class="form-control form-control-sm" data-level="' + l + '" data-field="hpRatio" value="' + (row.hpRatio ?? 100) + '" min="1" max="1000"></td>' +
+                    '<td><input type="number" class="form-control form-control-sm" data-level="' + l + '" data-field="atkRatio" value="' + (row.atkRatio ?? 100) + '" min="1" max="1000"></td>' +
+                    '<td><input type="number" class="form-control form-control-sm" data-level="' + l + '" data-field="defRatio" value="' + (row.defRatio ?? 100) + '" min="1" max="1000"></td>' +
+                    '<td><input type="number" class="form-control form-control-sm" data-level="' + l + '" data-field="saRatio" value="' + (row.saRatio ?? 100) + '" min="1" max="1000"></td>' +
+                    '<td><input type="number" class="form-control form-control-sm" data-level="' + l + '" data-field="sdRatio" value="' + (row.sdRatio ?? 100) + '" min="1" max="1000"></td>' +
+                    '<td><input type="number" class="form-control form-control-sm" data-level="' + l + '" data-field="spRatio" value="' + (row.spRatio ?? 100) + '" min="1" max="1000"></td>' +
+                    '<td><input type="number" class="form-control form-control-sm" data-level="' + l + '" data-field="rewardExp" value="' + (row.rewardExp || 0) + '" min="0" title="加入经验池"></td>' +
+                    '<td><input type="number" class="form-control form-control-sm" data-level="' + l + '" data-field="rewardCoins" value="' + (row.rewardCoins || 0) + '" min="0"></td>' +
+                    '<td><input type="number" class="form-control form-control-sm" data-level="' + l + '" data-field="rewardItemId" value="' + (row.rewardItemId || 0) + '" min="0"></td>' +
+                    '<td><input type="number" class="form-control form-control-sm" data-level="' + l + '" data-field="rewardPetId" value="' + (row.rewardPetId || 0) + '" min="0"></td></tr>';
+            }).join('');
+        }
+        /** 按精灵代码顺序填充：第1层 1,2,3，第2层 4,5,6，…；等级/属性/奖励保持默认 */
+        function fillFightLevelByOrder() {
+            fightLevelData = [];
+            for (let level = 1; level <= 80; level++) {
+                const start = (level - 1) * 3 + 1;
+                fightLevelData.push({
+                    level: level, bossIds: [start, start + 1, start + 2],
+                    enemyLv: 0, hpRatio: 100, atkRatio: 100, defRatio: 100, saRatio: 100, sdRatio: 100, spRatio: 100,
+                    rewardExp: 0, rewardCoins: 0, rewardItemId: 0, rewardPetId: 0
+                });
+            }
+            renderFightLevelTable();
+        }
+        /** 每层随机三只精灵：在 1~500 中每层随机取 3 个（可重复） */
+        function fillFightLevelRandom() {
+            const minId = 1, maxId = 500;
+            fightLevelData = [];
+            for (let level = 1; level <= 80; level++) {
+                const bossIds = [];
+                for (let i = 0; i < 3; i++) {
+                    bossIds.push(minId + Math.floor(Math.random() * (maxId - minId + 1)));
+                }
+                fightLevelData.push({
+                    level: level, bossIds: bossIds,
+                    enemyLv: 0, hpRatio: 100, atkRatio: 100, defRatio: 100, saRatio: 100, sdRatio: 100, spRatio: 100,
+                    rewardExp: 0, rewardCoins: 0, rewardItemId: 0, rewardPetId: 0
+                });
+            }
+            renderFightLevelTable();
+        }
+        function collectFightLevelRows() {
+            return fightLevelData.map(row => {
+                const l = row.level;
+                const bossInput = document.querySelector('#fightLevelList input[data-level="' + l + '"][data-field="bossIds"]');
+                const raw = bossInput ? (bossInput.value || '').trim() : '';
+                const bossIds = raw ? raw.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n > 0) : [1];
+                const get = (field, def) => {
+                    const el = document.querySelector('#fightLevelList input[data-level="' + l + '"][data-field="' + field + '"]');
+                    return el ? num(el.value, def) : def;
+                };
+                return {
+                    level: l,
+                    bossIds: bossIds.length ? bossIds : [1],
+                    enemyLv: get('enemyLv', 0),
+                    hpRatio: get('hpRatio', 100),
+                    atkRatio: get('atkRatio', 100),
+                    defRatio: get('defRatio', 100),
+                    saRatio: get('saRatio', 100),
+                    sdRatio: get('sdRatio', 100),
+                    spRatio: get('spRatio', 100),
+                    rewardExp: get('rewardExp', 0),
+                    rewardCoins: get('rewardCoins', 0),
+                    rewardItemId: get('rewardItemId', 0),
+                    rewardPetId: get('rewardPetId', 0)
+                };
+            });
+        }
+        async function saveFightLevel() {
+            const rows = collectFightLevelRows();
+            try {
+                const res = await fetch(API + '/gm/fightlevel/levels', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ levels: rows })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alert('保存成功');
+                    fightLevelData = rows;
+                    renderFightLevelTable();
+                } else {
+                    alert('保存失败: ' + (data.message || ''));
+                }
+            } catch (e) {
+                alert('保存失败: ' + e.message);
+            }
+        }
+        
+        function searchPets(query) {
+            if (!allPets || allPets.length === 0) return;
+            const q = (query || '').trim().toLowerCase();
+            if (!q) {
+                renderPetDatabase(allPets);
+                return;
+            }
+            const filtered = allPets.filter(p => {
+                const idStr = String(p.id);
+                const nameStr = (p.name || '').toLowerCase();
+                return idStr.includes(q) || nameStr.includes(q);
+            });
+            renderPetDatabase(filtered);
+        }
+
+        function searchItems(query) {
+            if (!allItems || allItems.length === 0) return;
+            const q = (query || '').trim().toLowerCase();
+            if (!q) {
+                renderItemDatabase(allItems);
+                return;
+            }
+            const filtered = allItems.filter(it => {
+                const idStr = String(it.id);
+                const nameStr = (it.name || '').toLowerCase();
+                return idStr.includes(q) || nameStr.includes(q);
+            });
+            renderItemDatabase(filtered);
+        }
+        
+        function showEditPetSkillsModal(catchTime, skillsArr) {
+            if (!currentUserId) return alert('请先选择用户');
+            document.getElementById('editPetCatchTime').value = catchTime;
+            const arr = Array.isArray(skillsArr) ? skillsArr : [];
+            const names = (window.__petSkillNames && window.__petSkillNames[String(catchTime)]) || [];
+            for (let i = 0; i < 4; i++) {
+                document.getElementById('editSkill' + i).value = arr[i] || '';
+                document.getElementById('editSkillName' + i).textContent = names[i] ? '（' + names[i] + '）' : '';
+            }
+            editPetSkillsModalInstance.show();
+        }
+        
+        async function savePetSkills() {
+            const catchTime = parseInt(document.getElementById('editPetCatchTime').value);
+            const skills = [
+                parseInt(document.getElementById('editSkill0').value) || 0,
+                parseInt(document.getElementById('editSkill1').value) || 0,
+                parseInt(document.getElementById('editSkill2').value) || 0,
+                parseInt(document.getElementById('editSkill3').value) || 0
+            ];
+            try {
+                const res = await fetch(`${API}/gm/pet/skills`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ userId: currentUserId, catchTime: catchTime, skills: skills })
+                });
+                const data = await res.json();
+                alert(data.success ? '修改成功' : data.message);
+                if (data.success) { editPetSkillsModalInstance.hide(); showUserDetail(currentUserId); }
+            } catch (e) { alert('请求失败: ' + e.message); }
+        }
+        
+        async function deletePet(catchTime, fromStorage) {
+            if (!currentUserId) return;
+            if (!confirm('确定删除该精灵？')) return;
+            try {
+                const res = await fetch(`${API}/gm/pet/delete`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ userId: currentUserId, catchTime: catchTime, fromStorage: fromStorage })
+                });
+                const data = await res.json();
+                alert(data.success ? '删除成功' : data.message);
+                if (data.success) showUserDetail(currentUserId);
+            } catch (e) { alert('请求失败: ' + e.message); }
+        }
+        
+        async function gmExpAdd() {
+            if (!currentUserId) return alert('请先选择用户');
+            const amount = parseInt(document.getElementById('expAddAmount').value) || 0;
+            if (amount < 0) return alert('发放数量不能为负');
+            try {
+                const res = await fetch(`${API}/gm/exp/add`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ userId: currentUserId, amount: amount })
+                });
+                const data = await res.json();
+                alert(data.success ? '发放成功，当前经验池: ' + data.expPool : data.message);
+                if (data.success) showUserDetail(currentUserId);
+            } catch (e) { alert('请求失败: ' + e.message); }
+        }
+        
+        async function gmExpSet() {
+            if (!currentUserId) return alert('请先选择用户');
+            const value = parseInt(document.getElementById('expSetValue').value);
+            if (isNaN(value) || value < 0) return alert('请输入有效非负数值');
+            try {
+                const res = await fetch(`${API}/gm/exp/set`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ userId: currentUserId, value: value })
+                });
+                const data = await res.json();
+                alert(data.success ? '设置成功，当前经验池: ' + data.expPool : data.message);
+                if (data.success) showUserDetail(currentUserId);
+            } catch (e) { alert('请求失败: ' + e.message); }
+        }
+        
+        async function deleteAccount() {
+            if (!currentUserId) return;
+            if (!confirm('确定删除该账号？此操作不可恢复！')) return;
+            try {
+                const res = await fetch(`${API}/gm/user/delete`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ userId: currentUserId })
+                });
+                const data = await res.json();
+                alert(data.success ? '账号已删除' : data.message);
+                if (data.success) { currentUserId = null; document.getElementById('userDetail').style.display = 'none'; loadUsers(); loadDashboard(); }
+            } catch (e) { alert('请求失败: ' + e.message); }
+        }
+        
+        async function createAccount() {
+            const email = document.getElementById('newEmail').value.trim();
+            const password = document.getElementById('newPassword').value.trim();
+            const nickname = document.getElementById('newNickname').value.trim();
+            if (!email || !password) { alert('请填写邮箱和密码'); return; }
+            try {
+                const res = await fetch(`${API}/gm/user/create`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ email: email, password: password, nickname: nickname })
+                });
+                const data = await res.json();
+                alert(data.success ? '创建成功，用户ID: ' + data.userId : data.message);
+                if (data.success) { document.getElementById('newEmail').value = ''; document.getElementById('newPassword').value = ''; document.getElementById('newNickname').value = ''; loadUsers(); loadDashboard(); }
+            } catch (e) { alert('请求失败: ' + e.message); }
+        }
+        
+        // 扭蛋机
+        async function gachaLoadList() {
+            const el = document.getElementById('gachaListContainer');
+            el.innerHTML = '<p class="text-muted">加载中...</p>';
+            try {
+                const res = await fetch(`${API}/gm/gacha/list`);
+                const data = await res.json();
+                if (data.success && data.data) {
+                    gachaListData = data.data;
+                    if (data.data.length === 0) {
+                        el.innerHTML = '<p class="text-muted">当前无奖励，点击「添加奖励」添加。</p>';
+                    } else {
+                        el.innerHTML = data.data.map(item => {
+                            const name = (item.name || '未知道具').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                            return `<div class="user-item d-flex justify-content-between align-items-center">
+                                <div><strong>#${item.index} ${name}</strong> (ID: ${item.itemID}) · 权重: ${item.weight} ${item.isGold ? '· 金豆' : ''}</div>
+                                <div><button class="btn btn-warning btn-sm me-1" onclick="gachaEditByIndex(${item.index})">修改</button><button class="btn btn-danger btn-sm" onclick="gachaRemove(${item.index})">删除</button></div>
+                            </div>`;
+                        }).join('');
+                    }
+                } else {
+                    el.innerHTML = '<p class="text-danger">加载失败</p>';
+                }
+            } catch (e) {
+                el.innerHTML = '<p class="text-danger">加载失败，请确认服务已启动且端口 8080 可访问</p>';
+            }
+        }
+        function gachaShowAdd() {
+            document.getElementById('gachaAddItemId').value = '';
+            document.getElementById('gachaAddWeight').value = '5';
+            document.getElementById('gachaAddName').value = '';
+            document.getElementById('gachaAddIsGold').checked = false;
+            gachaAddModalInstance.show();
+        }
+        async function gachaAddReward() {
+            const itemID = parseInt(document.getElementById('gachaAddItemId').value);
+            const weight = parseInt(document.getElementById('gachaAddWeight').value) || 1;
+            const name = document.getElementById('gachaAddName').value.trim();
+            const isGold = document.getElementById('gachaAddIsGold').checked;
+            if (!itemID || itemID <= 0) { alert('请填写道具ID'); return; }
+            try {
+                const res = await fetch(`${API}/gm/gacha/add`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ itemID, weight, name, isGold })
+                });
+                const data = await res.json();
+                alert(data.success ? '添加成功' : data.message);
+                if (data.success) { gachaAddModalInstance.hide(); gachaLoadList(); }
+            } catch (e) { alert('添加失败: ' + e.message); }
+        }
+        function gachaEditByIndex(index) {
+            const item = gachaListData.find(r => r.index === index);
+            if (!item) return;
+            document.getElementById('gachaEditIndex').value = index;
+            document.getElementById('gachaEditItemId').value = item.itemID;
+            document.getElementById('gachaEditWeight').value = item.weight;
+            document.getElementById('gachaEditName').value = item.name || '';
+            document.getElementById('gachaEditIsGold').checked = !!item.isGold;
+            gachaEditModalInstance.show();
+        }
+        async function gachaSaveEdit() {
+            const index = parseInt(document.getElementById('gachaEditIndex').value);
+            const itemID = parseInt(document.getElementById('gachaEditItemId').value);
+            const weight = parseInt(document.getElementById('gachaEditWeight').value) || 1;
+            const name = document.getElementById('gachaEditName').value.trim();
+            const isGold = document.getElementById('gachaEditIsGold').checked;
+            try {
+                const res = await fetch(`${API}/gm/gacha/update`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ index, itemID, weight, name, isGold })
+                });
+                const data = await res.json();
+                alert(data.success ? '修改成功' : data.message);
+                if (data.success) { gachaEditModalInstance.hide(); gachaLoadList(); }
+            } catch (e) { alert('修改失败: ' + e.message); }
+        }
+        async function gachaRemove(index) {
+            if (!confirm('确定删除该奖励？')) return;
+            try {
+                const res = await fetch(`${API}/gm/gacha/remove`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ index })
+                });
+                const data = await res.json();
+                alert(data.success ? '删除成功' : data.message);
+                if (data.success) gachaLoadList();
+            } catch (e) { alert('删除失败: ' + e.message); }
+        }
+        async function gachaSaveConfig() {
+            try {
+                const res = await fetch(`${API}/gm/gacha/save`, { method: 'POST' });
+                const data = await res.json();
+                alert(data.success ? '已保存到 gacha_rewards.json' : data.message);
+            } catch (e) { alert('保存失败: ' + e.message); }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+// ============================================================
+// 2112 飞行监听类 - 改后模板
+// 使用说明：
+// 1. 用 FFDec 在 NieoCore.swf 中搜索 2112 或 ON_OR_OFF_FLYING，找到实际类名与 onFlyChanged 全文。
+// 2. 将你找到的「完整类」（package、import、类名、start/监听注册、onFlyChanged 全文）复制为 XXX_原文.txt。
+// 3. 把下面「他人分支」整段合并进你的 onFlyChanged 的 else 中，替换或保留原有「自己」分支。
+// 4. 若采用方式 A，需在 PeopleActionEvent 中增加 FLY_MODE，在 BasePeoleModel.onAction 中增加对应 case。
+// ============================================================
+
+// ---- 仅「他人」分支：插入到 onFlyChanged 中 uid != MainManager.actorInfo.userID 的 else 里 ----
+
+var _loc2_:UserInfo = UserManager.getUser(_loc5_);  // _loc5_ = uid（包体前4字节）
+if(Boolean(_loc2_))
+{
+   _loc2_.actionType = _loc6_;  // _loc6_ = mode（包体后4字节，flyMode）
+   // 方式 A：事件驱动（需在 PeopleActionEvent 中定义 FLY_MODE，在 BasePeoleModel.onAction 中处理）
+   UserManager.dispatchAction(_loc5_, PeopleActionEvent.FLY_MODE, { actionType: _loc6_ });
+
+   // 方式 B（二选一）：若 BasePeoleModel 有 refreshFlyState()，可直接调用：
+   // var _loc3_:BasePeoleModel = UserManager.getUserModel(_loc5_) as BasePeoleModel;
+   // if(Boolean(_loc3_) && _loc3_.refreshFlyState != null)
+   // {
+   //    _loc3_.refreshFlyState();
+   // }
+}
+
+// ---- 若采用方式 A，在 PeopleActionEvent 中增加常量 ----
+// public static var FLY_MODE:String = "flyMode";  // 或 ACTION_TYPE_CHANGE
+
+// ---- 若采用方式 A，在 BasePeoleModel.onAction 的 switch 中增加 ----
+// case PeopleActionEvent.FLY_MODE:
+//    this._info.actionType = param1.data.actionType as uint;
+//    if(Boolean(this._nono))
+//    {
+//       this.showNono(this._nono.info, this._info.actionType);
+//    }
+//    break;
