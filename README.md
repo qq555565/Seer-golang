@@ -2,7 +2,11 @@
 
 这是赛尔号游戏服务器的Golang重构版本，基于原有的Lua代码结构进行转换。
 
-## 项目架构
+
+
+## 友情链接
+三梦服务端
+https://github.com/BaiSugar/kose_seer
 
 ### 目录结构
 ```
@@ -12,7 +16,7 @@ Seer-golang/                  # 项目根目录
 │   ├── loginserver/          # 登录服务器入口
 │   ├── ressrv/               # 资源服务器入口
 │   └── loginip/              # 登录IP服务器入口
-├── internal/
+│── internal/
 │   ├── core/                 # 核心模块
 │   │   ├── userdb/           # 用户数据库
 │   │   ├── logger/           # 日志系统
@@ -37,15 +41,15 @@ Seer-golang/                  # 项目根目录
 │   └── utils/                # 工具函数
 ├── GM/                       # GM 后台与面板
 ├── data/                     # 游戏数据（xml 等）
-├── docs/                     # 项目文档与说明
-├── scripts/                  # 脚本与联调测试
+
+│── scripts/                  # 脚本与联调测试
 ├── static/                   # 静态资源（如 GM 前端）
 ├── test/                     # 测试配置与启动
 ├── go.mod                    # Go 模块文件
 ├── go.sum                    # 依赖校验
 ├── Makefile                  # 构建脚本
 ├── build.bat / build.ps1     # Windows 构建
-└── README.md
+└── 说明文档.md
 ```
 
 ## 核心模块对应关系
