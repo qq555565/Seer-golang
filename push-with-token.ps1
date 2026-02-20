@@ -31,6 +31,8 @@ $urlWithToken = "https://${user}:${token}@github.com/qq555565/Seer-golang.git"
 $err = 0
 Push-Location $repoRoot
 try {
+    # 增大 POST 缓冲区，避免大仓库推送时 "unable to rewind rpc post data"
+    & $gitExe config http.postBuffer 524288000
     & $gitExe remote set-url origin $urlWithToken
     & $gitExe push -u origin main --force
     $err = $LASTEXITCODE
