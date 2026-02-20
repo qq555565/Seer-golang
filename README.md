@@ -6,36 +6,46 @@
 
 ### 目录结构
 ```
-golang_version/
-├── cmd/
-│   ├── gameserver/       # 游戏服务器入口
-│   ├── loginserver/      # 登录服务器入口
-│   ├── ressrv/           # 资源服务器入口
-│   └── loginip/          # 登录IP服务器入口
+Seer-golang/                  # 项目根目录
+├── cmd/                      # 可执行入口
+│   ├── gameserver/           # 游戏服务器入口
+│   ├── loginserver/          # 登录服务器入口
+│   ├── ressrv/               # 资源服务器入口
+│   └── loginip/              # 登录IP服务器入口
 ├── internal/
-│   ├── core/             # 核心模块
-│   │   ├── userdb/       # 用户数据库
-│   │   ├── logger/       # 日志系统
-│   │   ├── packet/       # 数据包处理
-│   │   └── protocol/     # 协议验证
-│   ├── game/             # 游戏逻辑
-│   │   ├── pets/         # 精灵系统
-│   │   ├── skills/       # 技能系统
-│   │   ├── battle/       # 战斗系统
-│   │   ├── items/        # 物品系统
-│   │   └── commands/     # 命令系统
-│   ├── handlers/         # 命令处理器
-│   ├── servers/          # 服务器实现
-│   │   ├── gameserver/   # 游戏服务器
-│   │   ├── loginserver/  # 登录服务器
-│   │   └── common/       # 公共服务器代码
-│   └── utils/            # 工具函数
-├── config/               # 配置文件
-├── data/                 # 游戏数据
-├── tools/                # 工具脚本
-├── go.mod                # Go模块文件
-├── go.sum                # 依赖校验文件
-└── Makefile              # 构建脚本
+│   ├── core/                 # 核心模块
+│   │   ├── userdb/           # 用户数据库
+│   │   ├── logger/           # 日志系统
+│   │   ├── packet/           # 数据包处理
+│   │   ├── nonoformcache/    # 诺诺形态缓存
+│   │   ├── soultransformcache/ # 灵魂转换缓存
+│   │   └── ...
+│   ├── game/                 # 游戏逻辑
+│   │   ├── pets/             # 精灵系统
+│   │   ├── skills/           # 技能系统
+│   │   ├── battle/           # 战斗系统
+│   │   ├── mapogres/         # 地图野怪
+│   │   ├── sptboss/          # 时空Boss等
+│   │   └── ...
+│   ├── handlers/             # 命令处理器（协议与业务）
+│   ├── server/               # 服务器实现
+│   │   ├── gameserver/       # 游戏服务器
+│   │   ├── loginserver/      # 登录服务器
+│   │   ├── resserver/        # 资源服务器
+│   │   ├── loginip/          # 登录IP服务
+│   │   └── common/           # 公共服务器代码
+│   └── utils/                # 工具函数
+├── GM/                       # GM 后台与面板
+├── data/                     # 游戏数据（xml 等）
+├── docs/                     # 项目文档与说明
+├── scripts/                  # 脚本与联调测试
+├── static/                   # 静态资源（如 GM 前端）
+├── test/                     # 测试配置与启动
+├── go.mod                    # Go 模块文件
+├── go.sum                    # 依赖校验
+├── Makefile                  # 构建脚本
+├── build.bat / build.ps1     # Windows 构建
+└── README.md
 ```
 
 ## 核心模块对应关系
@@ -52,8 +62,8 @@ golang_version/
 | `game/seer_skills.lua` | `internal/game/skills/` | 技能系统 |
 | `game/seer_battle.lua` | `internal/game/battle/` | 战斗系统 |
 | `game/seer_items.lua` | `internal/game/items/` | 物品系统 |
-| `servers/gameserver/` | `internal/servers/gameserver/` | 游戏服务器 |
-| `servers/loginserver/` | `internal/servers/loginserver/` | 登录服务器 |
+| `servers/gameserver/` | `internal/server/gameserver/` | 游戏服务器 |
+| `servers/loginserver/` | `internal/server/loginserver/` | 登录服务器 |
 | `handlers/` | `internal/handlers/` | 命令处理器 |
 
 ## 技术栈
@@ -96,11 +106,11 @@ make run-loginip
 # 构建所有服务器
 make build
 
-# 运行构建后的服务器
-./output/gameserver
-./output/loginserver
-./output/ressrv
-./output/loginip
+# 运行构建后的服务器（默认输出到 test/ 目录，文件名含时间戳）
+./test/gameserver_<时间戳>
+./test/loginserver_<时间戳>
+./test/ressrv_<时间戳>
+./test/loginip_<时间戳>
 ```
 
 ### 环境变量
@@ -114,7 +124,7 @@ make build
 
 ## 配置文件
 
-配置文件位于 `config/` 目录，支持JSON和YAML格式。
+配置与数据位于项目根目录及 `data/`、`test/` 等目录，按需放置 JSON/XML 等。
 
 ## 数据库
 
