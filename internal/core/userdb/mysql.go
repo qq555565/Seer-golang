@@ -176,6 +176,11 @@ func createTablesMySQL(db *UserDB) error {
 			data_json LONGTEXT NOT NULL COMMENT 'SPT BOSS配置JSON: mapBosses/sptBosses/traits',
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='GM SPT BOSS配置(地图BOSS/奖励/特性)'`,
+		`CREATE TABLE IF NOT EXISTS gm_boss_effect_config (
+			id INT PRIMARY KEY DEFAULT 1 COMMENT '唯一行',
+			data_json LONGTEXT NOT NULL COMMENT 'BOSS/特殊多效果配置JSON: effects[effectId]={fixedDamage,powerPercent,rounds等}',
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='GM BOSS多效果配置(691/700/976/1470等数值)'`,
 		`CREATE TABLE IF NOT EXISTS gm_buff_items_config (
 			id INT PRIMARY KEY DEFAULT 1 COMMENT '唯一行',
 			data_json LONGTEXT NOT NULL COMMENT 'BUFF 道具配置 JSON: speedupItems/autoFightItems/energyItems/studyItems',
@@ -244,6 +249,7 @@ func syncOfflineConfigToDB(db *UserDB) {
 		{"gm_gacha_config.json", db.SaveGachaConfig},
 		{"gm_dark_portal_config.json", db.SaveDarkPortalConfig},
 		{"gm_sptboss_config.json", db.SaveSPTBossConfig},
+		{"gm_boss_effect_config.json", db.SaveBossEffectConfig},
 		{"gm_buff_items_config.json", db.SaveBuffItemsConfig},
 		{"gm_reward_config.json", db.SaveRewardConfig},
 	}
@@ -1085,6 +1091,34 @@ func (db *UserDB) SaveSPTBossConfig(data []byte) error {
 	return err
 }
 
+// LoadBossEffectConfig 从 gm_boss_effect_config 表读取 BOSS 多效果配置 JSON（id=1）。未启用 MySQL 时返回 (nil, nil)。
+func (db *UserDB) LoadBossEffectConfig() ([]byte, error) {
+	if db.mysqlDB == nil {
+		return readOfflineConfig(db, "gm_boss_effect_config.json")
+	}
+	var data string
+	err := db.mysqlDB.QueryRow("SELECT data_json FROM gm_boss_effect_config WHERE id = 1").Scan(&data)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []byte(data), nil
+}
+
+// SaveBossEffectConfig 将 BOSS 多效果配置 JSON 写入 gm_boss_effect_config 表（id=1，存在则更新）。未启用 MySQL 时写离线文件。
+func (db *UserDB) SaveBossEffectConfig(data []byte) error {
+	if db.mysqlDB == nil {
+		writeOfflineConfig(db, "gm_boss_effect_config.json", data)
+		return nil
+	}
+	_, err := db.mysqlDB.Exec(
+		"INSERT INTO gm_boss_effect_config (id, data_json) VALUES (1, ?) ON DUPLICATE KEY UPDATE data_json = VALUES(data_json)",
+		string(data))
+	return err
+}
+
 // LoadBuffItemsConfig 从 gm_buff_items_config 表读取 BUFF 道具配置 JSON（id=1）。未启用 MySQL 时走离线文件。
 func (db *UserDB) LoadBuffItemsConfig() ([]byte, error) {
 	if db.mysqlDB == nil {
@@ -1238,7 +1272,8 @@ func (db *UserDB) ExportAllTablesToJSON(dir string) error {
 		"gm_gacha_config",
 		"gm_dark_portal_config",
 		"gm_sptboss_config",
-	}
+		"gm_boss_effect_config",
+		}
 
 	var lastErr error
 	for _, tbl := range tables {
@@ -1280,7 +1315,8 @@ func (db *UserDB) ExportGMConfigsToOfflineFiles() {
 		{"gm_gacha_config.json", db.LoadGachaConfig},
 		{"gm_dark_portal_config.json", db.LoadDarkPortalConfig},
 		{"gm_sptboss_config.json", db.LoadSPTBossConfig},
-	}
+		{"gm_boss_effect_config.json", db.LoadBossEffectConfig},
+		}
 
 	for _, e := range entries {
 		data, err := e.load()

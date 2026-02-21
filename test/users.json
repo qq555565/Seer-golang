@@ -8,8 +8,8 @@
       "color": 3381759,
       "registerTime": 1769569200,
       "roleCreated": true,
-      "session": "5\ufffd\"\ufffdv\ufffd\ufffdeJ\ufffd9W\u0000j@\ufffd",
-      "sessionHex": "3580229576fbbc654adc3957006a40ac"
+      "session": "\ufffdz,M\ufffdd\ufffdy\ufffd\ufffd~\ufffd;ʺ\ufffd",
+      "sessionHex": "907a2c4db664b579eefc7e983bcabaaa"
     },
     "100000002": {
       "userId": 100000002,
@@ -19,8 +19,8 @@
       "color": 0,
       "registerTime": 1769656737,
       "roleCreated": true,
-      "session": "\u0017r\ufffd\ufffd\u0014\u0003C3\ufffd\ufffd\ufffd\u0007\ufffd$r/",
-      "sessionHex": "1772f5d5140343339f8b8b07d324722f"
+      "session": "\ufffd\ufffd\ufffd\ufffd\u00265\ufffd4\ufffd\ufffdQ\ufffd\ufffdc`\ufffd",
+      "sessionHex": "81c5fdbc2635c6348ba151fcd06360bd"
     },
     "100000003": {
       "userId": 100000003,
@@ -293,9 +293,9 @@
         "isFollowing": false,
         "func": "AAACAAAAAAAAAAAAAAAAAAAAAAA="
       },
-      "mapId": 1,
-      "posX": 556,
-      "posY": 292,
+      "mapId": 5,
+      "posX": 365,
+      "posY": 190,
       "fitments": [],
       "allFitments": [],
       "texture": 1,
@@ -345,7 +345,7 @@
       "expPool": 0,
       "blacklist": [],
       "currentServer": 0,
-      "lastOnline": 1771436125,
+      "lastOnline": 1771610159,
       "miningCount": {
         "1": 1,
         "2": 3,
@@ -382,7 +382,12 @@
           "ev_sa": 0,
           "ev_sd": 0,
           "ev_sp": 0,
-          "skills": null,
+          "skills": [
+            10995,
+            11000,
+            20500,
+            10999
+          ],
           "trait": 1021
         },
         {
@@ -735,9 +740,9 @@
         "isFollowing": false,
         "func": "+A0DAAAAAAAAAAAAAAAAAAAAAAA="
       },
-      "mapId": 1,
-      "posX": 450,
-      "posY": 442,
+      "mapId": 10,
+      "posX": 310,
+      "posY": 380,
       "fitments": [],
       "allFitments": [],
       "texture": 1,
@@ -1332,7 +1337,7 @@
       "expPool": 899980000,
       "blacklist": [],
       "currentServer": 0,
-      "lastOnline": 1771436124,
+      "lastOnline": 1771610156,
       "defeatedSptBossIds": [
         113,
         166,

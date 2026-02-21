@@ -1,9 +1,13 @@
-# 使用 Token 推送到 GitHub（只在本机运行，Token 不会提交到仓库）
+﻿# 使用 Token 推送到 GitHub（只在本机运行，Token 不会提交到仓库）
 # 用法：
 #   1. 在 GitHub 创建 PAT: https://github.com/settings/tokens (勾选 repo)
 #   2. 在项目根目录创建文件 .github-token，内容只写一行：你的 Token
 #   3. 运行: .\push-with-token.ps1
 # 或设置环境变量: $env:GITHUB_TOKEN = "你的Token"; .\push-with-token.ps1
+
+# 控制台使用 UTF-8，避免中文乱码
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+if ($Host.Name -eq 'ConsoleHost') { chcp 65001 | Out-Null }
 
 $ErrorActionPreference = "Stop"
 $repoRoot = $PSScriptRoot
@@ -20,7 +24,7 @@ if (-not $token) {
     Write-Host "请先设置 Token：" -ForegroundColor Yellow
     Write-Host "  方式1: 在项目根目录创建 .github-token 文件，内容为你的 GitHub Personal Access Token" -ForegroundColor Gray
     Write-Host "  方式2: 在 PowerShell 中执行: `$env:GITHUB_TOKEN = '你的Token'" -ForegroundColor Gray
-    Write-Host "创建 PAT: https://github.com/settings/tokens (勾选 repo 权限)" -ForegroundColor Gray
+    Write-Host '创建 PAT: https://github.com/settings/tokens (勾选 repo 权限)' -ForegroundColor Gray
     Read-Host "按回车键退出"
     exit 1
 }

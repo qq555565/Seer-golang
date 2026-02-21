@@ -310,6 +310,60 @@ func RegisterGMHandlers(mux *http.ServeMux, gs *gameserver.GameServer) {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		}
 	})
+
+	// BOSS/特殊多效果配置（691/700/976/1470 等数值，存 gm_boss_effect_config）
+	mux.HandleFunc("/gm/boss_effect/config", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if r.Method == http.MethodGet {
+			handleGMBossEffectGet(w, r)
+		} else if r.Method == http.MethodPost {
+			handleGMBossEffectSave(w, r)
+		} else {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+}
+
+// handleGMBossEffectGet 获取 BOSS 多效果配置
+func handleGMBossEffectGet(w http.ResponseWriter, r *http.Request) {
+	cfg := GetBossEffectConfig()
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"data":    cfg,
+	})
+}
+
+// handleGMBossEffectSave 保存 BOSS 多效果配置
+func handleGMBossEffectSave(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Data *BossEffectConfig `json:"data"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "请求体无效: " + err.Error(),
+		})
+		return
+	}
+	if req.Data == nil {
+		req.Data = &BossEffectConfig{Effects: map[string]BossEffectParams{}}
+	}
+	if req.Data.Effects == nil {
+		req.Data.Effects = map[string]BossEffectParams{}
+	}
+	if err := SetBossEffectConfig(req.Data); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "保存失败: " + err.Error(),
+		})
+		return
+	}
+	logger.Info("[GM] 更新 BOSS 多效果配置成功")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "保存成功",
+	})
 }
 
 // BuffItemsConfig GM 配置：BUFF 道具效果

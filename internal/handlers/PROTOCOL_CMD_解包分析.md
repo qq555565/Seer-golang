@@ -471,7 +471,7 @@
 | **CMD 1001** 登录响应 | 自己 | 包体中的 NoNo 段含 SuperNono(1–5)，或通过 **9003** 请求自己后从 9003 响应取得。 |
 | **CMD 9003** NONO 信息 | 自己/指定目标 | 响应包体中有 SuperNono(1–5)，与 9003 解析顺序一致。 |
 | **CMD 2003** 地图玩家列表 | 同图所有玩家（含自己） | 每条玩家信息体由服务端 `buildPeopleInfo` 构建，其中 **6. NoNo** 顺序为：Flag(4), State(4), Color(4), **SuperNono(4)**。解析每条时取该 4 字节为形态 N。 |
-| **CMD 9019** NONO 跟随/回家 | 某玩家的跟随状态与形态 | 包体 **body[32:36]** 为 SuperNono 形态(1–5)（大端 uint32）。 |
+| **CMD 9019** NONO 跟随/回家 | 某玩家的跟随状态与形态 | 包体与 FollowCmdListener 一致：userId(4), **superStage(4)** [即 SuperNono 形态 1–5], state(4), nick(16), color(4), power(4)。形态在 **body[4:8]**。 |
 
 ### 客户端应请求的资源路径
 

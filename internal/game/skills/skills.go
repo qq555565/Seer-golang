@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/seer-game/golang-version/internal/core/logger"
+	"github.com/seer-game/golang-version/internal/game/typechart"
 )
 
 // Skill 技能数据（与前端 27_SkillXMLInfo 对齐：Url 用于客户端技能效果/动画）
@@ -298,8 +299,10 @@ func (s *Skills) CalculateBaseDamage(skill *Skill, attacker map[string]interface
 		baseDamage = baseDamage * 3 / 2 // 1.5倍
 	}
 
-	// 属性克制 (暂时使用默认值)
-	typeMultiplier := 1.0
+	// 属性克制：技能属性对防守方属性倍率（与 battle/typechart 一致）
+	defType := getInt(defender, "type", 8)
+	defType2 := getInt(defender, "type2", 0)
+	typeMultiplier := typechart.GetTypeMultiplierDual(skill.Type, defType, defType2)
 
 	// 随机因子 (85%-100%)
 	randomFactor := float64(rand.Intn(16)+85) / 100.0

@@ -234,6 +234,7 @@ func main() {
 		handlers.SetGachaPersistence(gs.UserDB)
 		handlers.SetDarkPortalPersistence(gs.UserDB)
 		handlers.SetSPTBossPersistence(gs.UserDB)
+		handlers.SetBossEffectPersistence(gs.UserDB)
 	}
 	handlers.LoadWeightsConfig()
 	handlers.LoadFusionRulesConfig()
@@ -243,6 +244,7 @@ func main() {
 	handlers.LoadGachaRewards()
 	handlers.LoadDarkPortalConfig()
 	handlers.LoadSPTBossConfig()
+	handlers.LoadBossEffectConfig()
 	// 如果数据库中没有配置，从handlers.go中的默认配置初始化
 	if len(handlers.GetDarkPortalConfig()) == 0 {
 		handlers.InitDarkPortalConfigFromHandlers()

@@ -67,6 +67,12 @@ type BattleState struct {
 	EnemyStatus    [20]byte
 	PlayerBattleLv [6]int8
 	EnemyBattleLv  [6]int8
+	// 战斗中的技能与 PP（最多 4 个，与 2503/2504 的技能槽位对应）
+	PlayerSkillIDs [4]uint32
+	PlayerSkillPP  [4]byte
+	EnemySkillIDs  [4]uint32
+	EnemySkillPP   [4]byte
+	EnemyPPInfinite bool
 	// 额外的“回合类固定伤害”效果：由技能配置触发，按回合开始结算
 	PlayerFixedDotDamage uint32
 	PlayerFixedDotRounds byte
@@ -75,6 +81,199 @@ type BattleState struct {
 	// 暴击强化：下 N 回合内攻击技能必定致命一击（由部分技能效果设置，如 SideEffect=58）
 	PlayerCritBuffRounds byte
 	EnemyCritBuffRounds  byte
+	// 多回合 BUFF/护盾（41 火抗 42 电伤×2 44 特防减半 46 挡n次 47 免疫能力下降 48 免疫异常 49 吸收n点伤害 50 物防减半）
+	PlayerFireResistRounds   byte   // 41: 本方受到火系伤害减半
+	EnemyFireResistRounds    byte
+	PlayerElectricBoostRounds byte  // 42: 本方电系技能伤害×2
+	EnemyElectricBoostRounds  byte
+	PlayerSpDefHalfRounds    byte   // 44: 本方受到特殊攻击伤害减半
+	EnemySpDefHalfRounds     byte
+	PlayerBlockCount        byte   // 46: 完全抵挡 n 次攻击（每次抵挡后减 1）
+	EnemyBlockCount         byte
+	PlayerImmuneStatDropRounds byte // 47: 免疫能力下降
+	EnemyImmuneStatDropRounds  byte
+	PlayerImmuneStatusRounds byte  // 48: 免疫异常状态
+	EnemyImmuneStatusRounds  byte
+	PlayerShieldPoints      uint32 // 49: 吸收伤害点数（先扣护盾再扣血）
+	EnemyShieldPoints       uint32
+	PlayerPhysDefHalfRounds byte   // 50: 本方受到物理攻击伤害减半
+	EnemyPhysDefHalfRounds  byte
+	// 扩展多回合效果：45 防御同对手 51 攻击同对手 57 每回合回血 65 某属性威力倍率 68 致死留1血
+	PlayerCopyDefRounds   byte   // 45: 本方防御力与对手相同
+	EnemyCopyDefRounds    byte
+	PlayerCopyAtkRounds   byte   // 51: 本方攻击力与对手相同
+	EnemyCopyAtkRounds    byte
+	PlayerRegenRounds     byte   // 57: 剩余回合数
+	PlayerRegenDivisor    byte   // 57: 每回合恢复 maxHP/m
+	EnemyRegenRounds      byte
+	EnemyRegenDivisor     byte
+	// 77 - n 回合内每次使用技能恢复 m 点体力
+	PlayerRegenPerUseRounds byte
+	PlayerRegenPerUseAmount uint32
+	EnemyRegenPerUseRounds  byte
+	EnemyRegenPerUseAmount  uint32
+	// 78 - n 回合内物理攻击对自身必定 miss
+	PlayerPhysMissRounds byte
+	EnemyPhysMissRounds  byte
+	// 83 - 自身雄性下两回合必定先手；雌性下两回合必定暴击
+	PlayerMaleFirstStrikeRounds  byte   // 雄性：先制加成
+	PlayerFemaleCritRounds       byte   // 雌性：必定暴击
+	EnemyMaleFirstStrikeRounds   byte
+	EnemyFemaleCritRounds        byte
+	// 84 - n 回合内受到物理攻击时 m% 几率将对手麻痹
+	PlayerParalyzeOnPhysHitRounds byte
+	PlayerParalyzeOnPhysHitChance byte
+	EnemyParalyzeOnPhysHitRounds  byte
+	EnemyParalyzeOnPhysHitChance  byte
+	// 86/106 - n 回合内属性（特殊）攻击对自身必定 miss
+	PlayerSpecialMissRounds byte
+	EnemySpecialMissRounds byte
+	// 89 - n 回合内每次造成伤害的 1/m 恢复体力
+	PlayerLifestealRounds   byte
+	PlayerLifestealDivisor  byte
+	EnemyLifestealRounds    byte
+	EnemyLifestealDivisor   byte
+	// 92 - n 回合内受到物理攻击时 m% 几率将对手冻伤
+	PlayerFreezeOnPhysHitRounds byte
+	PlayerFreezeOnPhysHitChance byte
+	EnemyFreezeOnPhysHitRounds  byte
+	EnemyFreezeOnPhysHitChance  byte
+	// 98 - n 回合内对雄性精灵的伤害为 m 倍
+	PlayerMaleDamageMultRounds byte
+	PlayerMaleDamageMult       byte
+	EnemyMaleDamageMultRounds  byte
+	EnemyMaleDamageMult        byte
+	// 104 - n 回合内每次直接攻击 m% 几率附带衰弱（随机能力-1）
+	PlayerWeaknessOnHitRounds  byte
+	PlayerWeaknessOnHitChance  byte
+	EnemyWeaknessOnHitRounds   byte
+	EnemyWeaknessOnHitChance   byte
+	// 108 - n 回合内受到物理攻击时 m% 几率将对手烧伤
+	PlayerBurnOnPhysHitRounds  byte
+	PlayerBurnOnPhysHitChance  byte
+	EnemyBurnOnPhysHitRounds   byte
+	EnemyBurnOnPhysHitChance   byte
+	// 109 - n 回合内造成伤害时 m% 几率令对手冻伤
+	PlayerFreezeOnDealDamageRounds  byte
+	PlayerFreezeOnDealDamageChance  byte
+	EnemyFreezeOnDealDamageRounds   byte
+	EnemyFreezeOnDealDamageChance   byte
+	// 463 - n 回合内每回合所受的伤害减少 m 点
+	PlayerDamageReducePerRoundRounds  byte
+	PlayerDamageReducePerRoundAmount  uint32
+	EnemyDamageReducePerRoundRounds   byte
+	EnemyDamageReducePerRoundAmount   uint32
+	// 402/405 - 后/先出手时额外附加 n 点固定伤害（每回合生效，不需要回合计数）
+	// 186 - 后出手时 m% 自身 stat 提升 n 级（每回合生效，不需要回合计数）
+	// 148/147/122/173 - 先/后出手时对手能力/状态变化（每回合生效，不需要回合计数）
+	// 461 - 若自身体力低于 1/m 则下回合起必定暴击（复用 PlayerCritBuffRounds）
+	// 475 - 若伤害不足 m 则下 n 回合必定暴击（复用 PlayerCritBuffRounds）
+	// 179 - 属性相同时威力提升 n（每回合生效，不需要回合计数）
+	// 193 - 若对手处于 XX 状态则必定暴击（每回合生效，不需要回合计数）
+	// 195/494 - 无视对手能力提升（每回合生效，不需要回合计数）
+	// 468 - 若自身能力下降则威力翻倍并解除（每回合生效，不需要回合计数）
+	PlayerElemPowerRounds byte   // 65: 剩余回合数
+	PlayerElemPowerMult   byte   // 65: 威力倍数（实际为倍率，如 10 表示 10 倍）
+	PlayerElemPowerType   byte   // 65: 属性类型
+	EnemyElemPowerRounds  byte
+	EnemyElemPowerMult    byte
+	EnemyElemPowerType    byte
+	PlayerEndureRounds    byte   // 68: 受到致死攻击时留 1 血
+	EnemyEndureRounds      byte
+	// 52 先手miss 53 己方伤害m倍 54 对方伤害1/m 55 属性反转 56 属性相同 62 镇魂歌
+	PlayerEvasionRounds     byte   // 52: 本方先手时对方技能 miss
+	EnemyEvasionRounds      byte
+	PlayerDamageMultRounds  byte   // 53: 剩余回合数
+	PlayerDamageMult       byte   // 53: 伤害倍数 m
+	EnemyDamageMultRounds   byte
+	EnemyDamageMult         byte
+	PlayerDamageReductRounds byte  // 54: 对方打我方伤害 1/m
+	PlayerDamageReduct      byte
+	EnemyDamageReductRounds  byte
+	EnemyDamageReduct       byte
+	PlayerTypeSwapRounds    byte   // 55: 属性反转
+	EnemyTypeSwapRounds     byte
+	PlayerTypeCopyRounds    byte   // 56: 属性与对方相同
+	EnemyTypeCopyRounds     byte
+	PlayerDestinyBondRounds byte   // 62: 镇魂歌，n 回合后若己方存活则对方死亡
+	EnemyDestinyBondRounds  byte
+	// 59 - 牺牲强化下一只：当前精灵被击败时，下一只上场的精灵获得能力强化
+	PlayerSacrificeBuffActive bool   // 59: 是否激活牺牲强化（当前精灵被击败时触发）
+	PlayerSacrificeBuffStats  [6]int8 // 59: 强化能力等级（攻击/防御/特攻/特防/速度/命中）
+	EnemySacrificeBuffActive  bool
+	EnemySacrificeBuffStats   [6]int8
+	// 66 - 击败回血：当次攻击击败对方时恢复自身最大体力的1/n
+	PlayerKillHealDivisor     byte   // 66: 击败回血的除数 n
+	EnemyKillHealDivisor      byte
+	// 67 - 击败减对方下只最大HP：当次攻击击败对方时减少对方下次出战精灵的最大体力1/n
+	PlayerKillReduceMaxHpDivisor byte // 67: 减少最大HP的除数 n
+	EnemyKillReduceMaxHpDivisor  byte
+	// 69 - 药剂反噬：下n回合对手使用体力药剂时效果变成减少相应的体力
+	PlayerPotionReverseRounds byte   // 69: 剩余回合数
+	EnemyPotionReverseRounds  byte
+	// 71 - 牺牲暴击：自己牺牲(体力降到0), 使下一只出战精灵在前两回合内必定致命一击
+	PlayerSacrificeCritActive bool   // 71: 是否激活牺牲暴击
+	EnemySacrificeCritActive  bool
+	// 72 - Miss死亡：如果此回合miss，则立即死亡
+	PlayerMissDeathActive bool   // 72: 是否激活Miss死亡
+	EnemyMissDeathActive  bool
+	// 73 - 先手反弹：如果先出手，则受攻击时反弹200%的伤害给对手，持续n回合
+	PlayerFirstStrikeReflectRounds byte   // 73: 剩余回合数
+	PlayerFirstStrikeReflectActive bool   // 73: 是否激活（本回合先手时激活）
+	EnemyFirstStrikeReflectRounds  byte
+	EnemyFirstStrikeReflectActive  bool
+	// 508 - 下回合所受伤害减少 m 点（魂之再生等）；生效一次后清零
+	PlayerNextTurnDamageReduce uint32
+	EnemyNextTurnDamageReduce  uint32
+	// 81 - 下 n 回合自身攻击技能必定命中
+	PlayerMustHitRounds byte
+	EnemyMustHitRounds  byte
+	// 1635 - 誓言之约：k 回合后恢复全部体力；倒计时到 0 时回满
+	PlayerDelayedFullHealRounds byte
+	EnemyDelayedFullHealRounds  byte
+	// 439 - 若自身处于能力下降或异常则对手每回合受到 m 点固定伤害
+	PlayerDealFixedDotWhenWeakRounds  byte
+	PlayerDealFixedDotWhenWeakDamage  uint32
+	EnemyDealFixedDotWhenWeakRounds   byte
+	EnemyDealFixedDotWhenWeakDamage   uint32
+	// 448 - n 回合内每回合对手全能力降低 stages 级
+	EnemyAllStatDropRounds  byte
+	EnemyAllStatDropStages  int8
+	PlayerAllStatDropRounds byte
+	PlayerAllStatDropStages int8
+	// 478 - n 回合内对手使用的属性技能(Category=4)无效
+	EnemyStatusSkillInvalidRounds  byte
+	PlayerStatusSkillInvalidRounds byte
+	// 545 - n 回合内若受到伤害高于 m 则对手获得效果 type（如能力下降/异常）
+	PlayerReflectStatusWhenHitRounds    byte
+	PlayerReflectStatusWhenHitThreshold uint32
+	PlayerReflectStatusWhenHitType      byte
+	EnemyReflectStatusWhenHitRounds     byte
+	EnemyReflectStatusWhenHitThreshold uint32
+	EnemyReflectStatusWhenHitType      byte
+	// 21 - m~n 回合每回合反弹对手伤害的 1/k
+	PlayerReflectDamageRounds  byte
+	PlayerReflectDamageDivisor  byte   // k
+	EnemyReflectDamageRounds    byte
+	EnemyReflectDamageDivisor   byte
+	// 32 - n 回合暴击率增加 1/16（与 58 必暴击分开）
+	PlayerCritRateBonusRounds byte
+	EnemyCritRateBonusRounds  byte
+	// 454 - 当自身血量少于 1/n 时先制 +m
+	PlayerPriorityBonusWhenLowHPRounds   byte
+	PlayerPriorityBonusWhenLowHPDivisor  byte   // n，如 3 表示 1/3 血
+	PlayerPriorityBonusWhenLowHPBonus    int    // m
+	EnemyPriorityBonusWhenLowHPRounds   byte
+	EnemyPriorityBonusWhenLowHPDivisor  byte
+	EnemyPriorityBonusWhenLowHPBonus    int
+	// 482 - 本回合 m% 几率先制 +n（每回合使用技能时掷骰）
+	PlayerPriorityBonusChance  byte   // m%
+	PlayerPriorityBonusAmount   int    // n
+	EnemyPriorityBonusChance    byte
+	EnemyPriorityBonusAmount   int
+	// 488 - 对手体力小于 threshold 时伤害增加 percent%（在伤害计算时用，不存回合）
+	PlayerDamageBoostWhenEnemyLowThreshold uint32
+	PlayerDamageBoostWhenEnemyLowPercent   byte
 	// 盖亚挑战条件判定：战斗发生时的地图 ID；回合数（每次 2405 使用技能+1）；最后一击是否致命一击
 	BattleMapID    int
 	RoundCount     int
@@ -113,6 +312,79 @@ type BattleState struct {
 	IsDarkPortalBattle bool
 	// IsBossChallenge 本场是否为「对应 BOSS 挑战」（2411/2421 发起），仅此时发放该 BOSS 的 SPT 精元/精灵奖励；勇者之塔/试炼之塔/2408 野怪不设
 	IsBossChallenge bool
+	// 116 - n 回合内每次防御（受到攻击）造成伤害的 1/5 恢复自身体力
+	PlayerDefendHealRounds byte
+	EnemyDefendHealRounds  byte
+	// 117 - n 回合内每次防御（受到攻击）m% 概率使对手疲惫 1~3 回合
+	PlayerDefendFatigueRounds byte
+	PlayerDefendFatigueChance byte
+	EnemyDefendFatigueRounds  byte
+	EnemyDefendFatigueChance  byte
+	// 125 - n 回合内每回合被攻击时减少受到的伤害上限 m
+	PlayerDamageCapRounds byte
+	PlayerDamageCap       uint32
+	EnemyDamageCapRounds  byte
+	EnemyDamageCap        uint32
+	// 126 - n 回合内每回合自身攻击和速度 +m 级（回合末结算）
+	PlayerSpeedBoostRounds byte
+	PlayerSpeedBoostStages int8
+	EnemySpeedBoostRounds  byte
+	EnemySpeedBoostStages  int8
+	// 123 - n 回合内受到任何伤害时自身 XX 提高 m 级
+	PlayerHurtStatBoostRounds  byte
+	PlayerHurtStatBoostStat    byte
+	PlayerHurtStatBoostStages  int8
+	EnemyHurtStatBoostRounds   byte
+	EnemyHurtStatBoostStat     byte
+	EnemyHurtStatBoostStages   int8
+	// 128 - n 回合内接受的物理伤害转化为体力恢复
+	PlayerPhysDmgToHealRounds byte
+	EnemyPhysDmgToHealRounds  byte
+	// 185 - 击败处于 XX 状态的对手时，下一只出场的对手也进入 XX 状态（0=未触发）
+	PlayerTransferStatusToNextEnemy byte
+	// 127 - n% 概率 m 回合内受到伤害减半
+	PlayerDamageHalfRounds  byte
+	EnemyDamageHalfRounds   byte
+	// 144 - 消耗自己所有体力，使下一只出战的精灵 n 回合免疫异常
+	PlayerSacrificeImmuneStatusRounds byte
+	EnemySacrificeImmuneStatusRounds  byte
+	// 146 - n 回合内受到物理攻击时 m% 使对方中毒
+	PlayerPoisonOnPhysHitRounds  byte
+	PlayerPoisonOnPhysHitChance byte
+	EnemyPoisonOnPhysHitRounds  byte
+	EnemyPoisonOnPhysHitChance byte
+	// 150 - n 回合内对手每回合防御和特防等级 m
+	EnemyDefSpDefRounds  byte
+	EnemyDefSpDefStages  int8
+	PlayerDefSpDefRounds byte
+	PlayerDefSpDefStages int8
+	// 471 - 先出手时 n 回合内免疫异常状态（复用 PlayerImmuneStatusRounds）
+	// 490 - 若造成伤害超过 m 则自身速度 +n 级（每回合生效，不需要回合计数）
+	// 429 - 固定伤递增：每次使用增加 increment，最高 max
+	PlayerFixedDmgIncrement uint32
+	EnemyFixedDmgIncrement  uint32
+	// 441 - 每次攻击暴击率 +n%，最高 m%
+	PlayerCritRateBonus byte
+	EnemyCritRateBonus  byte
+	// 110 - n 回合内每次受到攻击时 m% 几率使对手 stat 等级 -1
+	PlayerDefendStatDropRounds byte
+	PlayerDefendStatDropChance byte
+	PlayerDefendStatDropStat   byte
+	EnemyDefendStatDropRounds  byte
+	EnemyDefendStatDropChance  byte
+	EnemyDefendStatDropStat    byte
+	// 91 - n 回合内双方状态变化同时影响己方与对手（能力等级与异常状态镜像）
+	PlayerStatusMirrorRounds byte
+	EnemyStatusMirrorRounds  byte
+	// 181 - n% 概率使对手XX，每次使用m%增加，最高k%（累积几率）
+	Player181CurrentChance byte // 当前累积几率（百分比）
+	Player181StatusIdx     byte
+	Player181MaxChance     byte
+	Player181Increment     byte
+	Enemy181CurrentChance  byte
+	Enemy181StatusIdx      byte
+	Enemy181MaxChance      byte
+	Enemy181Increment      byte
 }
 
 // GameServer 游戏服务器

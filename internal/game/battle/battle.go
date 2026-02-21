@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/seer-game/golang-version/internal/game/skills"
+	"github.com/seer-game/golang-version/internal/game/typechart"
 )
 
 // 战斗状态常量
@@ -57,26 +58,6 @@ const (
 	TURN_TIMEOUT    = 10 // 10秒
 	AUTO_FIGHT_DELAY = 2 // 2秒
 )
-
-// typeChart 属性克制表
-var typeChart = map[int][]int{
-	1: {2, 7},           // 草克水、地面
-	2: {3, 7},           // 水克火、地面
-	3: {1, 6, 9},        // 火克草、机械、冰
-	4: {1, 11},          // 飞行克草、战斗
-	5: {2, 4},           // 电克水、飞行
-	6: {9},              // 机械克冰
-	7: {3, 5, 6},        // 地面克火、电、机械
-	8: {},               // 普通无克制
-	9: {1, 4, 7},        // 冰克草、飞行、地面
-	10: {11},            // 超能克战斗
-	11: {8, 9},          // 战斗克普通、冰
-	12: {13},            // 光克暗影
-	13: {10, 13},        // 暗影克超能、暗影
-	14: {16},            // 神秘克圣灵
-	15: {9, 15, 16},     // 龙克冰、龙、圣灵
-	16: {1, 2, 3, 5, 9}, // 圣灵克草、水、火、电、冰
-}
 
 // Pet 战斗精灵
 type Pet struct {
@@ -213,47 +194,14 @@ func createPetFromData(data map[string]interface{}) *Pet {
 	return pet
 }
 
-// 属性无效表：攻击方属性 -> 防守方属性，伤害为 0（电打地、超能打光）
-var typeNoEffect = map[int]map[int]bool{
-	5:  {7: true},  // 电系技能攻击地面系无效
-	10: {12: true}, // 超能系技能攻击光系无效
-}
-
-// GetTypeMultiplier 获取属性克制倍率
+// GetTypeMultiplier 获取属性克制倍率（委托 typechart 包，保持 handlers 兼容）
 func GetTypeMultiplier(atkType, defType int) float64 {
-	// 先检查是否无效（无伤害）
-	if defs, ok := typeNoEffect[atkType]; ok && defs[defType] {
-		return 0
-	}
-	// 检查是否克制
-	if types, ok := typeChart[atkType]; ok {
-		for _, t := range types {
-			if t == defType {
-				return 2.0
-			}
-		}
-	}
-	
-	// 检查是否被克制
-	if types, ok := typeChart[defType]; ok {
-		for _, t := range types {
-			if t == atkType {
-				return 0.5
-			}
-		}
-	}
-	
-	return 1.0
+	return typechart.GetTypeMultiplier(atkType, defType)
 }
 
 // GetTypeMultiplierDual 处理双属性防守：倍率 = 单属性倍率相乘
 func GetTypeMultiplierDual(atkType int, defType1 int, defType2 int) float64 {
-	m1 := GetTypeMultiplier(atkType, defType1)
-	if defType2 <= 0 || defType2 == defType1 {
-		return m1
-	}
-	m2 := GetTypeMultiplier(atkType, defType2)
-	return m1 * m2
+	return typechart.GetTypeMultiplierDual(atkType, defType1, defType2)
 }
 
 // GetStatMultiplier 获取能力等级倍率

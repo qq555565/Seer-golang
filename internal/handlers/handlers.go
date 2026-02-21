@@ -1363,7 +1363,8 @@ func handlePeopleTransform(ctx *gameserver.HandlerContext) {
 }
 
 // handleOnOrOffFlying CMD 2112 飞行开关
-// 请求: flyMode(4)。响应: userId(4)+flyMode(4)，对齐 Lua；并广播给同地图其他玩家
+// 请求: flyMode(4)。响应/广播 body: userId(4)+flyMode(4)，解包协议与 Flash 端 2112 监听一致
+// 先广播 2003（带更新后的 actionType）再广播 2112，便于客户端先更新 UserInfo 再根据 2112 刷新他人飞行显示
 func handleOnOrOffFlying(ctx *gameserver.HandlerContext) {
 	flyMode := uint32(0)
 	if len(ctx.Body) >= 4 {
@@ -1375,21 +1376,36 @@ func handleOnOrOffFlying(ctx *gameserver.HandlerContext) {
 		ctx.GameServer.UserDB.SaveGameData(ctx.UserID, user)
 	}
 	body := make([]byte, 8)
-	binary.BigEndian.PutUint32(body[0:4], uint32(ctx.UserID))
-	binary.BigEndian.PutUint32(body[4:8], flyMode)
+	binary.BigEndian.PutUint32(body[0:4], uint32(ctx.UserID)) // 包体前 4 字节：谁在飞
+	binary.BigEndian.PutUint32(body[4:8], flyMode)             // 包体后 4 字节：0=落地 非0=飞行
 	ctx.GameServer.SendResponse(ctx.ClientData, 2112, ctx.UserID, ctx.SeqID, body)
 	if user.MapID > 0 {
-		// 广播 2112 时包头 userId 必须为“正在飞行的玩家”，客户端据此更新该玩家的飞行显示
+		// 1. 先广播 2003，让同图玩家先拿到含 actionType 的列表
+		listBody := buildMapPlayerListForMap(ctx.GameServer, user.MapID)
+		ctx.GameServer.BroadcastToMap(user.MapID, 0, 2003, listBody)
 		clients := ctx.GameServer.GetClientsOnMap(user.MapID)
 		for _, c := range clients {
 			if c.UserID == ctx.UserID {
 				continue
 			}
+			// 2. 2112：包体 飞行者uid(4)+flyMode(4)，包头用飞行者 A 的 userId
 			ctx.GameServer.SendResponse(c, 2112, ctx.UserID, 0, body)
+			if user.Nono.State == 1 {
+				body9019 := make([]byte, 36)
+				binary.BigEndian.PutUint32(body9019[0:4], uint32(ctx.UserID))
+				binary.BigEndian.PutUint32(body9019[4:8], uint32(user.Nono.SuperNono))
+				binary.BigEndian.PutUint32(body9019[8:12], 1)
+				nickBytes := []byte(user.Nono.Nick)
+				if len(nickBytes) > 16 {
+					nickBytes = nickBytes[:16]
+				}
+				copy(body9019[12:28], nickBytes)
+				binary.BigEndian.PutUint32(body9019[28:32], uint32(user.Nono.Color))
+				binary.BigEndian.PutUint32(body9019[32:36], 0)
+				ctx.GameServer.SendResponse(c, 9019, ctx.UserID, 0, body9019)
+			}
 		}
-		// 广播更新后的 2003，使同图玩家即时看到飞行状态变化
-		listBody := buildMapPlayerListForMap(ctx.GameServer, user.MapID)
-		ctx.GameServer.BroadcastToMap(user.MapID, 0, 2003, listBody)
+		logger.Info(fmt.Sprintf("[2112] 飞行状态广播: UID=%d FlyMode=%d MapID=%d 已发2003+2112", ctx.UserID, flyMode, user.MapID))
 	}
 }
 
@@ -2115,7 +2131,14 @@ func handleNonoInfo(ctx *gameserver.HandlerContext) {
 	buf = append(buf, funcBits...)
 	writeU32(uint32(n.SuperEnergy))
 	writeU32(uint32(n.SuperLevel))
-	writeU32(uint32(n.SuperStage))
+	// 客户端用 superStage 拼 nono_N.swf，写形态值 1-5（与 SuperNono 一致）
+	superStage := n.SuperNono
+	if superStage < 1 {
+		superStage = 1
+	} else if superStage > 5 {
+		superStage = 5
+	}
+	writeU32(uint32(superStage))
 
 	ctx.GameServer.SendResponse(ctx.ClientData, 9003, ctx.UserID, ctx.SeqID, buf)
 }
@@ -5423,6 +5446,131 @@ func buildNoteReadyToFightInfo(ctx *gameserver.HandlerContext, enemyID uint32) [
 	return out
 }
 
+// initPlayerSkillPP 在 BattleState 中初始化当前出战精灵的技能与 PP（首次或换宠时使用）
+func initPlayerSkillPP(battle *gameserver.BattleState, user *userdb.GameData, activeIdx int, petMgr *gamepets.Pets, skillMgr *gameskills.Skills) {
+	// 若 BattleState 中已有技能 ID，则认为本场/本只精灵已初始化
+	hasIDs := false
+	for i := 0; i < 4; i++ {
+		if battle.PlayerSkillIDs[i] != 0 {
+			hasIDs = true
+			break
+		}
+	}
+	if hasIDs {
+		return
+	}
+	if user == nil || activeIdx < 0 || activeIdx >= len(user.Pets) {
+		return
+	}
+	p := &user.Pets[activeIdx]
+	petID := p.ID
+	if petID <= 0 {
+		petID = 7
+	}
+	level := p.Level
+	if level <= 0 {
+		level = 5
+	}
+	ev := p.GetEVStats()
+	stats := petMgr.GetStats(petID, level, p.DV, ev, p.Nature)
+	battle.PlayerMaxHP = uint32(stats.MaxHP)
+	if battle.PlayerHP == 0 {
+		battle.PlayerHP = uint32(stats.HP)
+	}
+
+	var rawSkills []int
+	if len(p.Skills) > 0 {
+		rawSkills = p.Skills
+	} else {
+		rawSkills = petMgr.GetSkillsForLevel(petID, level)
+	}
+	for i := 0; i < 4; i++ {
+		battle.PlayerSkillIDs[i] = 0
+		battle.PlayerSkillPP[i] = 0
+	}
+	idx := 0
+	for _, sid := range rawSkills {
+		if sid <= 0 {
+			continue
+		}
+		if idx >= 4 {
+			break
+		}
+		pp := 20
+		if sk := skillMgr.Get(sid); sk != nil {
+			if sk.PP > 0 {
+				pp = sk.PP
+			} else if sk.MaxPP > 0 {
+				pp = sk.MaxPP
+			}
+		}
+		if pp <= 0 {
+			pp = 20
+		}
+		if pp > 255 {
+			pp = 255
+		}
+		battle.PlayerSkillIDs[idx] = uint32(sid)
+		battle.PlayerSkillPP[idx] = byte(pp)
+		idx++
+	}
+}
+
+// initEnemySkillPP 在 BattleState 中初始化敌方技能与 PP（首次使用 2405 时调用）
+func initEnemySkillPP(battle *gameserver.BattleState, enemyID, enemyLevel int, skillMgr *gameskills.Skills) {
+	hasIDs := false
+	for i := 0; i < 4; i++ {
+		if battle.EnemySkillIDs[i] != 0 {
+			hasIDs = true
+			break
+		}
+	}
+	if hasIDs {
+		return
+	}
+	if enemyID <= 0 {
+		return
+	}
+	if enemyLevel <= 0 {
+		enemyLevel = 5
+	}
+	raw := getEnemySkillsForPet(enemyID, enemyLevel)
+	infinite := sptboss.IsInfinitePPBoss(enemyID)
+	for i := 0; i < 4; i++ {
+		battle.EnemySkillIDs[i] = 0
+		battle.EnemySkillPP[i] = 0
+	}
+	idx := 0
+	for _, sid := range raw {
+		if sid <= 0 {
+			continue
+		}
+		if idx >= 4 {
+			break
+		}
+		pp := 20
+		if infinite {
+			pp = 99
+		} else if sk := skillMgr.Get(sid); sk != nil {
+			if sk.PP > 0 {
+				pp = sk.PP
+			} else if sk.MaxPP > 0 {
+				pp = sk.MaxPP
+			}
+		}
+		if pp <= 0 {
+			pp = 20
+		}
+		if pp > 255 {
+			pp = 255
+		}
+		battle.EnemySkillIDs[idx] = uint32(sid)
+		battle.EnemySkillPP[idx] = byte(pp)
+		idx++
+	}
+	battle.EnemyPPInfinite = infinite
+}
+
 // buildNoteReadyToFightInfoTower 多敌方战斗通用 2503：敌方发送本层全部 Boss（catchTime=0,1,2...），供勇者之塔(2415)与试炼之塔(2429)使用。
 // 切换时不再发 2503，避免客户端重载 PetFightDLL 导致 2504 进错上下文；切换时只发 2504+2505，otherInfo.catchTime=当前 Boss 索引，客户端 _petInfoMap.getValue(catchTime) 取正确 skinID。
 func buildNoteReadyToFightInfoTower(ctx *gameserver.HandlerContext, bossIDs []int) []byte {
@@ -6982,20 +7130,16 @@ func handleEnterMap(ctx *gameserver.HandlerContext) {
 		logger.Info(fmt.Sprintf("[2022] 推送盖亚出场(当日地图): UID=%d MapID=%d", ctx.UserID, user.MapID))
 	}
 
-	// 家园地图特殊处理：每人最多1只NONO，若NONO已召唤跟随(State==1)，则不在基地再推送9003，避免客户端在基地多显示一只
-	if mapId > 10000 || mapId == uint32(ctx.UserID) {
-		if user.Nono.State != 1 {
-			// 确保形态值根据超能等级自动更新（超能等级模型）
-			if user.Nono.SuperLevel > 0 {
-				updateSuperNonoTypeByLevel(user)
-				if ctx.GameServer.UserDB != nil {
-					ctx.GameServer.UserDB.SaveGameData(ctx.UserID, user)
-				}
-			}
-			nonoBody := buildNonoInfo(ctx.UserID, user)
-			ctx.GameServer.SendResponse(ctx.ClientData, 9003, ctx.UserID, 0, nonoBody)
+	// 向自己推送 9003，使客户端 NonoManager.info 有完整数据（含 superStage），己方才能绘制跟随的 NoNo（解包：NonoModel 用 _info.superStage 拼 nono_N.swf）
+	// 原“家园且跟随时不推”会导致己方在基地完全看不见 NoNo，故改为每次进图都推；若出现基地内多一只再按客户端逻辑收窄
+	if user.Nono.SuperLevel > 0 {
+		updateSuperNonoTypeByLevel(user)
+		if ctx.GameServer.UserDB != nil {
+			ctx.GameServer.UserDB.SaveGameData(ctx.UserID, user)
 		}
 	}
+	nonoBody := buildNonoInfo(ctx.UserID, user)
+	ctx.GameServer.SendResponse(ctx.ClientData, 9003, ctx.UserID, 0, nonoBody)
 }
 
 // pushOtherPlayersFlyAndNonoToClient 向刚进图的客户端补发同图其他玩家的 2112（飞行）、9019（NONO 跟随），
@@ -7011,14 +7155,14 @@ func pushOtherPlayersFlyAndNonoToClient(gs *gameserver.GameServer, targetClient 
 			body2112 := make([]byte, 8)
 			binary.BigEndian.PutUint32(body2112[0:4], uint32(c.UserID))
 			binary.BigEndian.PutUint32(body2112[4:8], uint32(other.FlyMode))
+			// 包头用飞行者 userId，客户端据此识别“谁”在飞并刷新该玩家显示
 			gs.SendResponse(targetClient, 2112, c.UserID, 0, body2112)
 		}
 		if other.Nono.State == 1 {
-			// 9019 体与前端 FollowCmdListener 解析顺序一致：userId(4), superStage(4), state(4), nick(16), color(4), power(4)
 			body9019 := make([]byte, 36)
 			binary.BigEndian.PutUint32(body9019[0:4], uint32(c.UserID))
-			binary.BigEndian.PutUint32(body9019[4:8], uint32(other.Nono.SuperNono)) // superStage 1-5，客户端加载 nono_N.swf
-			binary.BigEndian.PutUint32(body9019[8:12], 1)                           // state=1 跟随
+			binary.BigEndian.PutUint32(body9019[4:8], uint32(other.Nono.SuperNono))
+			binary.BigEndian.PutUint32(body9019[8:12], 1)
 			nickBytes := []byte(other.Nono.Nick)
 			if len(nickBytes) > 16 {
 				nickBytes = nickBytes[:16]
@@ -7099,19 +7243,15 @@ func pushInitialMapEnter(ctx *gameserver.HandlerContext) {
 		ctx.GameServer.SendResponse(ctx.ClientData, cmdSpecialPetNote, ctx.UserID, 0, gaiyaNote)
 	}
 
-	// 家园地图：若NONO已召唤跟随(State==1)，不推送9003，避免基地多显示一只
-	if mapId > 10000 || mapId == uint32(ctx.UserID) {
-		if user.Nono.State != 1 {
-			if user.Nono.SuperLevel > 0 {
-				updateSuperNonoTypeByLevel(user)
-				if ctx.GameServer.UserDB != nil {
-					ctx.GameServer.UserDB.SaveGameData(ctx.UserID, user)
-				}
-			}
-			nonoBody := buildNonoInfo(ctx.UserID, user)
-			ctx.GameServer.SendResponse(ctx.ClientData, 9003, ctx.UserID, 0, nonoBody)
+	// 向自己推送 9003，使客户端 NonoManager.info 有完整数据（含 superStage），己方才能绘制跟随的 NoNo
+	if user.Nono.SuperLevel > 0 {
+		updateSuperNonoTypeByLevel(user)
+		if ctx.GameServer.UserDB != nil {
+			ctx.GameServer.UserDB.SaveGameData(ctx.UserID, user)
 		}
 	}
+	nonoBody := buildNonoInfo(ctx.UserID, user)
+	ctx.GameServer.SendResponse(ctx.ClientData, 9003, ctx.UserID, 0, nonoBody)
 }
 
 // buildPeopleInfo 构建 2001/2003 用的用户信息体，严格对齐
@@ -7222,12 +7362,21 @@ func buildPeopleInfo(userID int64, user *userdb.GameData, sysTime int64, posX, p
 	writeU32(uint32(user.TeacherID))
 	writeU32(uint32(user.StudentID))
 
-	// 6. NoNo 与 9003 顺序一致：Flag, State, Color, SuperNono。他人看到的形态取决于该玩家的等级（SuperLevel→SuperNono 1-5）
-	writeU32(uint32(user.Nono.Flag))
-	writeU32(uint32(user.Nono.State))   // 0=在家 1=跟随
+	// 6. NoNo：客户端 setForPeoleInfo 将第一个 U32 按 32 位解析为 nonoState，nonoState[1]=跟随；
+	//    后续顺序为 nonoColor(4), superNono(4), playerForm(4), transTime(4)。与 9003 形态一致。
+	nonoStateBits := uint32(user.Nono.Flag)
+	if user.Nono.State == 1 {
+		nonoStateBits |= 2 // bit 1 = 跟随，客户端据此进 showNono 并显示飞船
+	}
+	writeU32(nonoStateBits)
 	writeU32(uint32(user.Nono.Color))
-	writeU32(uint32(user.Nono.SuperNono)) // 形态 1-5（由该玩家 SuperLevel 推导），客户端加载 nono_N.swf
-	writeU32(0)                          // transTime
+	if user.Nono.SuperNono > 0 {
+		writeU32(1)
+	} else {
+		writeU32(0)
+	}
+	writeU32(0) // playerForm
+	writeU32(0) // transTime
 
 	// 7. TeamInfo：id, coreCount, isShow, logoBg, logoIcon, logoColor, txtColor, logoWord(4)
 	writeU32(0)
@@ -7413,61 +7562,68 @@ func buildMapOgreList(mapId int) []byte {
 	return body
 }
 
-// buildNonoInfo 构建NoNo信息响应
+// buildNonoInfo 构建 9003 NoNo 信息响应，严格对齐客户端 NonoInfo(IDataInput) 的解析顺序：
+// userID(4), flag(4), state(4), nick(16), superNono(4), color(4), power(4), mate(4), iq(4), ai(2),
+// birth(4), chargeTime(4), func(20), superEnergy(4), superLevel(4), superStage(4)
 func buildNonoInfo(userID int64, user *userdb.GameData) []byte {
-	// 创建响应缓冲区
-	buffer := make([]byte, 128)
-	index := 0
-
-	// 写入用户ID
-	binary.BigEndian.PutUint32(buffer[index:], uint32(userID))
-	index += 4
-
-	// 写入NoNo标志
-	binary.BigEndian.PutUint32(buffer[index:], uint32(user.Nono.Flag))
-	index += 4
-
-	// 写入NoNo状态：0=在家（基地显示），1=跟随（基地不显示，每人最多1只）
-	binary.BigEndian.PutUint32(buffer[index:], uint32(user.Nono.State))
-	index += 4
-
-	// 写入NoNo昵称
-	nonoNameBytes := []byte(user.Nono.Nick)
-	copy(buffer[index:index+16], nonoNameBytes)
-	index += 16
-
-	// 写入SuperNoNo形态值（1-5），客户端据此加载对应的SWF文件
-	binary.BigEndian.PutUint32(buffer[index:], uint32(user.Nono.SuperNono))
-	index += 4
-	logger.Info(fmt.Sprintf("[buildNonoInfo] UserID=%d SuperLevel=%d SuperNono形态=%d (应加载nono_%d.swf)", 
-		userID, user.Nono.SuperLevel, user.Nono.SuperNono, user.Nono.SuperNono))
-
-	// 写入颜色
-	binary.BigEndian.PutUint32(buffer[index:], uint32(user.Nono.Color))
-	index += 4
-
-	// 写入能量
-	binary.BigEndian.PutUint32(buffer[index:], uint32(user.Nono.Power))
-	index += 4
-
-	// 写入亲密度
-	binary.BigEndian.PutUint32(buffer[index:], uint32(user.Nono.Mate))
-	index += 4
-
-	// 写入IQ
-	binary.BigEndian.PutUint32(buffer[index:], uint32(user.Nono.IQ))
-	index += 4
-
-	// 写入AI
-	binary.BigEndian.PutUint16(buffer[index:], uint16(user.Nono.AI))
-	index += 2
-
-	// 填充剩余空间为0
-	for i := index; i < 128; i++ {
-		buffer[i] = 0
+	n := user.Nono
+	buf := make([]byte, 0, 90)
+	writeU32 := func(v uint32) {
+		t := make([]byte, 4)
+		binary.BigEndian.PutUint32(t, v)
+		buf = append(buf, t...)
+	}
+	writeU16 := func(v uint16) {
+		t := make([]byte, 2)
+		binary.BigEndian.PutUint16(t, v)
+		buf = append(buf, t...)
+	}
+	writeFixed := func(s string, nLen int) {
+		b := []byte(s)
+		if len(b) > nLen {
+			b = b[:nLen]
+		}
+		buf = append(buf, b...)
+		for i := len(b); i < nLen; i++ {
+			buf = append(buf, 0)
+		}
 	}
 
-	return buffer
+	writeU32(uint32(userID))
+	writeU32(uint32(n.Flag))
+	writeU32(uint32(n.State))
+	writeFixed(n.Nick, 16)
+	writeU32(uint32(n.SuperNono)) // 形态 1-5，客户端加载 nono_N.swf
+	writeU32(uint32(n.Color))
+	writeU32(uint32(n.Power * 1000)) // 客户端 /1000
+	writeU32(uint32(n.Mate * 1000))
+	writeU32(uint32(n.IQ))
+	writeU16(uint16(n.AI))
+	if n.Birth > 0 {
+		writeU32(uint32(n.Birth))
+	} else {
+		writeU32(uint32(time.Now().Unix()))
+	}
+	writeU32(uint32(n.ChargeTime))
+	funcBits := make([]byte, 20)
+	if len(n.Func) > 0 {
+		copy(funcBits, n.Func)
+	}
+	buf = append(buf, funcBits...)
+	writeU32(uint32(n.SuperEnergy))
+	writeU32(uint32(n.SuperLevel))
+	// 客户端用 superStage 拼 nono_N.swf，必须写形态值(1-5)；DB 的 SuperStage 可能为 0，故用 SuperNono（由 SuperLevel 换算）
+	superStage := n.SuperNono
+	if superStage < 1 {
+		superStage = 1
+	} else if superStage > 5 {
+		superStage = 5
+	}
+	writeU32(uint32(superStage))
+
+	logger.Info(fmt.Sprintf("[buildNonoInfo] UserID=%d SuperLevel=%d SuperNono形态=%d superStage=%d (应加载nono_%d.swf)",
+		userID, n.SuperLevel, n.SuperNono, superStage, superStage))
+	return buf
 }
 
 func handleLeaveMap(ctx *gameserver.HandlerContext) {
@@ -7752,6 +7908,11 @@ func pushMultiEnemySwitch2504_2505(ctx *gameserver.HandlerContext, battle *games
 	battle.RoundCount = 0
 	battle.EnemyBattleLv = [6]int8{}
 	battle.EnemyStatus = [20]byte{}
+	// 185 - 若上一只被击败时处于 XX 状态，则本只出场也进入 XX 状态
+	if battle.PlayerTransferStatusToNextEnemy > 0 && battle.PlayerTransferStatusToNextEnemy < 20 {
+		battle.EnemyStatus[battle.PlayerTransferStatusToNextEnemy] = byte(rand.Intn(2) + 2)
+		battle.PlayerTransferStatusToNextEnemy = 0
+	}
 	battle.EnemyCritBuffRounds = 0
 	battle.LastHitWasCrit = false
 	ctx.GameServer.BattleStates[ctx.UserID] = battle
@@ -8153,6 +8314,45 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 				picked := &user.Pets[nextIndex]
 				battle.PlayerStatus = [20]byte{}
 				battle.PlayerBattleLv = [6]int8{}
+				// 59 - 牺牲强化下一只：如果上一只精灵有牺牲强化效果且被击败，给新精灵应用强化
+				if battle.PlayerSacrificeBuffActive {
+					for i := 0; i < 6; i++ {
+						if battle.PlayerSacrificeBuffStats[i] > 0 {
+							cur := int(battle.PlayerBattleLv[i])
+							cur += int(battle.PlayerSacrificeBuffStats[i])
+							if cur > 6 {
+								cur = 6
+							}
+							battle.PlayerBattleLv[i] = int8(cur)
+						}
+					}
+					// 应用后清除牺牲强化标记
+					battle.PlayerSacrificeBuffActive = false
+					for i := 0; i < 6; i++ {
+						battle.PlayerSacrificeBuffStats[i] = 0
+					}
+				}
+				// 71 - 牺牲暴击：自己牺牲(体力降到0), 使下一只出战精灵在前两回合内必定致命一击
+				if battle.PlayerSacrificeCritActive {
+					battle.PlayerCritBuffRounds = 2
+					battle.PlayerSacrificeCritActive = false
+				}
+				// 67 - 击败减对方下只最大HP：减少新精灵的最大体力1/n
+				if battle.PlayerKillReduceMaxHpDivisor > 0 {
+					reduceAmount := battle.PlayerMaxHP / uint32(battle.PlayerKillReduceMaxHpDivisor)
+					if reduceAmount > 0 && battle.PlayerMaxHP > reduceAmount {
+						battle.PlayerMaxHP -= reduceAmount
+						if battle.PlayerHP > battle.PlayerMaxHP {
+							battle.PlayerHP = battle.PlayerMaxHP
+						}
+					}
+					battle.PlayerKillReduceMaxHpDivisor = 0
+				}
+				// 144 - 牺牲全部体力使下一只 n 回合免疫异常
+				if battle.PlayerSacrificeImmuneStatusRounds > 0 {
+					battle.PlayerImmuneStatusRounds = battle.PlayerSacrificeImmuneStatusRounds
+					battle.PlayerSacrificeImmuneStatusRounds = 0
+				}
 				petStats := petMgr.GetStats(picked.ID, picked.Level, picked.DV, picked.GetEVStats(), picked.Nature)
 				battle.PlayerHP = uint32(petStats.HP)
 				battle.PlayerMaxHP = uint32(petStats.MaxHP)
@@ -8190,6 +8390,26 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 		skipPlayerAction = true
 		battle.PlayerStatus[gameskills.StatusIndexParalysis]--
 	}
+	// 石化（status[9]）：本回合无法行动，并递减回合数
+	if battle.PlayerStatus[gameskills.StatusIndexPetrify] > 0 {
+		skipPlayerAction = true
+		battle.PlayerStatus[gameskills.StatusIndexPetrify]--
+	}
+	// 混乱（status[10]）：简化为“本回合无法行动”，并递减回合数
+	if battle.PlayerStatus[gameskills.StatusIndexConfusion] > 0 {
+		skipPlayerAction = true
+		battle.PlayerStatus[gameskills.StatusIndexConfusion]--
+	}
+	// 石化（status[9]）：本回合无法行动，并递减回合数
+	if battle.PlayerStatus[gameskills.StatusIndexPetrify] > 0 {
+		skipPlayerAction = true
+		battle.PlayerStatus[gameskills.StatusIndexPetrify]--
+	}
+	// 混乱（status[10]）：简化为“本回合无法行动”，并递减回合数
+	if battle.PlayerStatus[gameskills.StatusIndexConfusion] > 0 {
+		skipPlayerAction = true
+		battle.PlayerStatus[gameskills.StatusIndexConfusion]--
+	}
 
 	// 玩家攻击：计算伤害（完整版）
 	petMgr := gamepets.GetInstance()
@@ -8210,6 +8430,8 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 		}
 		playerDV = user.Pets[activeIdx].DV
 	}
+	// 初始化当前出战精灵的技能与 PP（仅首次或换宠后会真正写入）
+	initPlayerSkillPP(battle, user, activeIdx, petMgr, skillMgr)
 	// 获取玩家精灵的性格、EV 与特性
 	playerNature := 0
 	playerEV := gamepets.EVStats{}
@@ -8250,6 +8472,39 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 		skill = skillMgr.Get(10001) // 默认技能：撞击
 	}
 
+	// PP 消耗与耗尽判定：若本回合未被异常直接跳过，则根据技能 ID 查找并减少 PP；
+	// 若 PP 已为 0，则本回合无法行动（视为技能释放失败）。
+	if !skipPlayerAction && skillID != 0 {
+		idxPP := -1
+		for i := 0; i < 4; i++ {
+			if battle.PlayerSkillIDs[i] == skillID {
+				idxPP = i
+				break
+			}
+		}
+		if idxPP >= 0 {
+			if battle.PlayerSkillPP[idxPP] == 0 {
+				skipPlayerAction = true
+			} else {
+				// 412 - 体力低于 1/n 时不消耗 PP
+				noPPCost := false
+				if skill.EffectID == 412 && battle.PlayerMaxHP > 0 {
+					effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+					divisor := 2
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						divisor = effArgs[0]
+					}
+					if battle.PlayerHP < battle.PlayerMaxHP/uint32(divisor) {
+						noPPCost = true
+					}
+				}
+				if !noPPCost {
+					battle.PlayerSkillPP[idxPP]--
+				}
+			}
+		}
+	}
+
 	// 计算玩家本回合是否命中（考虑命中等级与必中）
 	playerHit := !skipPlayerAction
 	if playerHit {
@@ -8276,6 +8531,10 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 				playerHit = false
 			}
 		}
+		// 81 - 下 n 回合自身攻击技能必定命中（覆盖本次命中结果）
+		if !playerHit && battle.PlayerMustHitRounds > 0 && skill.Category != 4 {
+			playerHit = true
+		}
 	}
 
 	// 获取敌人精灵数据（敌人 EV 默认为 0）
@@ -8283,12 +8542,39 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 	enemyEV := gamepets.EVStats{}
 	enemyStats := petMgr.GetStats(battle.EnemyID, battle.EnemyLevel, 15, enemyEV, 0)
 
+	// 初始化敌方技能与 PP（仅首次会真正写入）
+	initEnemySkillPP(battle, battle.EnemyID, battle.EnemyLevel, skillMgr)
+
 	// 先手判定：按技能先制 + 速度比较（雷伊/盖亚 +6；魔狮迪露 体力低于一半时 +6）
 	enemySkillForTurn, enemySkillIDForTurn := pickEnemySkill(skillMgr, battle.EnemyID, battle.EnemyLevel)
 	playerPriority := skill.Priority
+	// 454 - 当自身血量少于 1/n 时先制 +m
+	if battle.PlayerPriorityBonusWhenLowHPRounds > 0 && battle.PlayerMaxHP > 0 && battle.PlayerHP < battle.PlayerMaxHP/uint32(battle.PlayerPriorityBonusWhenLowHPDivisor) {
+		playerPriority += battle.PlayerPriorityBonusWhenLowHPBonus
+	}
+	// 482 - m% 几率先制 +n（本回合掷骰）
+	if battle.PlayerPriorityBonusChance > 0 && rand.Intn(100) < int(battle.PlayerPriorityBonusChance) {
+		playerPriority += battle.PlayerPriorityBonusAmount
+	}
+	// 83（雄性）- 下两回合必定先手
+	if battle.PlayerMaleFirstStrikeRounds > 0 {
+		playerPriority += 10
+	}
 	enemyPriority := 0
 	if enemySkillForTurn != nil {
 		enemyPriority = enemySkillForTurn.Priority + sptboss.GetPriorityBonusWithHP(battle.EnemyID, battle.EnemyHP, battle.EnemyMaxHP)
+	}
+	// 454（敌方）- 当自身血量少于 1/n 时先制 +m
+	if battle.EnemyPriorityBonusWhenLowHPRounds > 0 && battle.EnemyMaxHP > 0 && battle.EnemyHP < battle.EnemyMaxHP/uint32(battle.EnemyPriorityBonusWhenLowHPDivisor) {
+		enemyPriority += battle.EnemyPriorityBonusWhenLowHPBonus
+	}
+	// 482（敌方）- m% 几率先制 +n
+	if battle.EnemyPriorityBonusChance > 0 && rand.Intn(100) < int(battle.EnemyPriorityBonusChance) {
+		enemyPriority += battle.EnemyPriorityBonusAmount
+	}
+	// 83（敌方雄性）- 下两回合必定先手
+	if battle.EnemyMaleFirstStrikeRounds > 0 {
+		enemyPriority += 10
 	}
 	playerSpeed := int(float64(playerStats.Speed) * gamebattle.GetStatMultiplier(int(battle.PlayerBattleLv[gameskills.StatSpeed])))
 	if playerSpeed < 1 {
@@ -8314,6 +8600,39 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 		(enemyPriority == playerPriority && enemySpeed > playerSpeed) ||
 		(enemyPriority == playerPriority && enemySpeed == playerSpeed && rand.Intn(2) == 1)
 	isGaiyaFirst := enemyFirst
+	// 52：本方先手时对方技能 miss（敌方有 52 且我方先手则我方 miss）
+	if playerHit && !enemyFirst && battle.EnemyEvasionRounds > 0 && skill.MustHit != 1 {
+		playerHit = false
+	}
+	// 78（敌方）：n 回合内物理攻击对敌方必定 miss
+	if playerHit && skill.Category == 1 && battle.EnemyPhysMissRounds > 0 && skill.MustHit != 1 {
+		playerHit = false
+	}
+	// 86（敌方）：n 回合内属性（特殊）攻击对敌方必定 miss
+	if playerHit && skill.Category == 2 && battle.EnemySpecialMissRounds > 0 && skill.MustHit != 1 {
+		playerHit = false
+	}
+	// 72 - Miss死亡：如果此回合miss，则立即死亡
+	if !playerHit && battle.PlayerMissDeathActive {
+		battle.PlayerHP = 0
+		battle.PlayerMissDeathActive = false
+	}
+	// 136 - 若 Miss，自身恢复 1/n 体力
+	if !playerHit && skill != nil && skill.EffectID == 136 && battle.PlayerHP > 0 {
+		effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+		divisor := 4
+		if len(effArgs) >= 1 && effArgs[0] > 0 {
+			divisor = effArgs[0]
+		}
+		heal := battle.PlayerMaxHP / uint32(divisor)
+		if heal > 0 {
+			newHP := battle.PlayerHP + heal
+			if newHP > battle.PlayerMaxHP {
+				newHP = battle.PlayerMaxHP
+			}
+			battle.PlayerHP = newHP
+		}
+	}
 	// 敌方先手且本回合敌方已将我方击至 0 HP 时，我方未出招，2505 中不显示我方本回合出招
 	playerTurnSkippedBecauseDead := false
 
@@ -8328,6 +8647,29 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 	power := uint32(skill.Power)
 	if power == 0 && skill.Category != 4 {
 		power = 40 // 非状态技能缺威力时默认 40
+	}
+	// 1901：潜力越高威力越大（0~155），按 DV*5
+	if skill.EffectID == 1901 && skill.Category != 4 {
+		if playerDV < 0 {
+			playerDV = 0
+		}
+		power = uint32(playerDV * 5)
+	}
+	// 61：威力随机 50~150
+	if skill.EffectID == 61 && skill.Category != 4 {
+		power = uint32(rand.Intn(150-50+1) + 50)
+	}
+	// 70：威力随机 140~220
+	if skill.EffectID == 70 && skill.Category != 4 {
+		power = uint32(rand.Intn(220-140+1) + 140)
+	}
+	// 40：先出手时威力为 2 倍
+	if skill.EffectID == 40 && skill.Category != 4 && !enemyFirst {
+		power *= 2
+	}
+	// 118：威力随机 140~180
+	if skill.EffectID == 118 && skill.Category != 4 {
+		power = uint32(rand.Intn(180-140+1) + 140)
 	}
 
 	// damageCalc 为公式计算得到的理论伤害（不考虑“血量上限”这一物理限制）
@@ -8346,13 +8688,34 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 			def = float64(enemyStats.SpDef)
 			atkStage, defStage = 2, 3 // 特殊：特攻/特防
 		}
+		// 51: 本方攻击力与对手相同
+		if battle.PlayerCopyAtkRounds > 0 {
+			if skill.Category == 2 {
+				atk = float64(enemyStats.SpAtk)
+			} else {
+				atk = float64(enemyStats.Attack)
+			}
+		}
+		// 45: 对方防御力与己方相同（即对方防御=己方防御）
+		if battle.EnemyCopyDefRounds > 0 {
+			if skill.Category == 2 {
+				def = float64(playerStats.SpDef)
+			} else {
+				def = float64(playerStats.Defence)
+			}
+		}
 		atk *= gamebattle.GetStatMultiplier(int(battle.PlayerBattleLv[atkStage]))
 		def *= gamebattle.GetStatMultiplier(int(battle.EnemyBattleLv[defStage]))
 		if def < 1 {
 			def = 1
 		}
+		powerForCalc := float64(power)
+		// 65: n 回合内某属性技能威力 m 倍
+		if battle.PlayerElemPowerRounds > 0 && skill.Type == int(battle.PlayerElemPowerType) {
+			powerForCalc *= float64(battle.PlayerElemPowerMult)
+		}
 		// 基础伤害（向下取整）
-		baseDamage := math.Floor(((float64(playerLevel)*0.4 + 2.0) * float64(power) * atk / def / 50.0) + 2.0)
+		baseDamage := math.Floor(((float64(playerLevel)*0.4 + 2.0) * powerForCalc * atk / def / 50.0) + 2.0)
 
 		// STAB（同属性加成，1.5倍）
 		stab := 1.0
@@ -8363,7 +8726,15 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 		// 属性克制
 		typeMod := 1.0
 		if enemyPet != nil {
-			typeMod = gamebattle.GetTypeMultiplierDual(skill.Type, enemyPet.Type, enemyPet.Type2)
+			if battle.EnemyTypeSwapRounds > 0 {
+				// 55：属性反转，用对方类型攻击己方技能类型的克制
+				typeMod = gamebattle.GetTypeMultiplierDual(enemyPet.Type, enemyPet.Type2, skill.Type)
+			} else if battle.EnemyTypeCopyRounds > 0 {
+				// 56：属性相同，克制为 1
+				typeMod = 1.0
+			} else {
+				typeMod = gamebattle.GetTypeMultiplierDual(skill.Type, enemyPet.Type, enemyPet.Type2)
+			}
 		}
 
 		// 随机（217~255）
@@ -8382,6 +8753,33 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 		// 特性：会心(1023) —— 额外 +1/16 暴击率（上限 16）
 		if playerTrait == 1023 && critRate < 16 {
 			critRate++
+		}
+		// 32 - n 回合暴击率增加 1/16
+		if battle.PlayerCritRateBonusRounds > 0 && critRate < 16 {
+			critRate++
+		}
+		// 441 - 每次攻击暴击率 +n%（累积，最高 m%）；PlayerCritRateBonus 以 1/16 为单位
+		if battle.PlayerCritRateBonus > 0 {
+			critRate += int(battle.PlayerCritRateBonus)
+			if critRate > 16 {
+				critRate = 16
+			}
+		}
+		// 83（雌性）- 下两回合必定暴击
+		if battle.PlayerFemaleCritRounds > 0 {
+			critRate = 16
+		}
+		// 95 - 对手处于睡眠状态时致命一击率提升 n/16
+		if skill.EffectID == 95 && battle.EnemyStatus[gameskills.StatusIndexSleep] > 0 {
+			effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+			bonus := 4
+			if len(effArgs) >= 1 && effArgs[0] > 0 {
+				bonus = effArgs[0]
+			}
+			critRate += bonus
+			if critRate > 16 {
+				critRate = 16
+			}
 		}
 		isCritPlayer = rand.Intn(16) < critRate
 		// 暴击伤害：对齐“正常攻击伤害的两倍”规则
@@ -8404,6 +8802,36 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 
 		// 理论伤害（包含各种加成与随机，但还未考虑“血量上限”等裁剪）
 		damageCalc = uint32(baseDamage * stab * typeMod * randomMod * critMod)
+		// 53：n 回合己方攻击伤害 m 倍
+		if battle.PlayerDamageMultRounds > 0 && battle.PlayerDamageMult > 0 {
+			damageCalc *= uint32(battle.PlayerDamageMult)
+		}
+
+		// effect 88：n% 几率伤害为 m 倍
+		if damageCalc > 0 && skill.EffectID == 88 {
+			effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+			chance, mult := 10, 2
+			if len(effArgs) >= 1 {
+				chance = effArgs[0]
+			}
+			if len(effArgs) >= 2 {
+				mult = effArgs[1]
+			}
+			if chance < 0 {
+				chance = 0
+			}
+			if mult < 1 {
+				mult = 1
+			}
+			if rand.Intn(100) < chance {
+				mul := uint64(damageCalc) * uint64(mult)
+				if mul > math.MaxUint32 {
+					damageCalc = math.MaxUint32
+				} else {
+					damageCalc = uint32(mul)
+				}
+			}
+		}
 
 		// 特性：叶绿/流水/炎火/.../圣灵 (1006-1021)
 		// 对应 Args: type 5%，当技能属性与特性匹配时，伤害额外 +5%
@@ -8478,11 +8906,388 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 				}
 				finalDamage += uint32(bonus)
 			}
-			// 烧伤效果：被烧伤方造成的伤害减半
-			if battle.PlayerStatus[gameskills.StatusIndexBurn] > 0 {
+			// effect 64：自身在烧伤/冻伤/中毒状态下造成的伤害加倍（并视为覆盖烧伤减伤）
+			hasAilment := battle.PlayerStatus[gameskills.StatusIndexPoison] > 0 ||
+				battle.PlayerStatus[gameskills.StatusIndexBurn] > 0 ||
+				battle.PlayerStatus[gameskills.StatusIndexFreeze] > 0
+			if skill.EffectID == 64 && hasAilment && finalDamage > 0 {
+				mul := uint64(finalDamage) * 2
+				if mul > math.MaxUint32 {
+					finalDamage = math.MaxUint32
+				} else {
+					finalDamage = uint32(mul)
+				}
+				damageCalc = finalDamage
+			}
+			// effect 98：n 回合内对雄性精灵的伤害为 m 倍
+			if battle.PlayerMaleDamageMultRounds > 0 && finalDamage > 0 {
+				targetPet := petMgr.Get(battle.EnemyID)
+				if targetPet != nil && targetPet.Gender == 1 {
+					mult := battle.PlayerMaleDamageMult
+					if mult < 1 {
+						mult = 1
+					}
+					mul := uint64(finalDamage) * uint64(mult)
+					if mul > math.MaxUint32 {
+						finalDamage = math.MaxUint32
+					} else {
+						finalDamage = uint32(mul)
+					}
+					if finalDamage > battle.EnemyHP {
+						finalDamage = battle.EnemyHP
+					}
+				}
+			}
+			// effect 82：目标为雄性伤害 200%，雌性 50%（无性别不变）
+			if skill.EffectID == 82 && finalDamage > 0 {
+				targetPet := petMgr.Get(battle.EnemyID)
+				if targetPet != nil {
+					if targetPet.Gender == 1 {
+						finalDamage *= 2
+						if finalDamage > battle.EnemyHP {
+							finalDamage = battle.EnemyHP
+						}
+					} else if targetPet.Gender == 2 {
+						finalDamage /= 2
+						if finalDamage < 1 {
+							finalDamage = 1
+						}
+					}
+				}
+			}
+			// 96 - 对手处于烧伤状态时威力翻倍
+			if skill.EffectID == 96 && battle.EnemyStatus[gameskills.StatusIndexBurn] > 0 && finalDamage > 0 {
+				mul := uint64(finalDamage) * 2
+				if mul > math.MaxUint32 {
+					finalDamage = math.MaxUint32
+				} else {
+					finalDamage = uint32(mul)
+				}
+				if finalDamage > battle.EnemyHP {
+					finalDamage = battle.EnemyHP
+				}
+			}
+			// 97 - 对手处于冻伤状态时威力翻倍
+			if skill.EffectID == 97 && battle.EnemyStatus[gameskills.StatusIndexFreeze] > 0 && finalDamage > 0 {
+				mul := uint64(finalDamage) * 2
+				if mul > math.MaxUint32 {
+					finalDamage = math.MaxUint32
+				} else {
+					finalDamage = uint32(mul)
+				}
+				if finalDamage > battle.EnemyHP {
+					finalDamage = battle.EnemyHP
+				}
+			}
+			// 102 - 对手处于麻痹状态时威力翻倍
+			if skill.EffectID == 102 && battle.EnemyStatus[gameskills.StatusIndexParalysis] > 0 && finalDamage > 0 {
+				mul := uint64(finalDamage) * 2
+				if mul > math.MaxUint32 {
+					finalDamage = math.MaxUint32
+				} else {
+					finalDamage = uint32(mul)
+				}
+				if finalDamage > battle.EnemyHP {
+					finalDamage = battle.EnemyHP
+				}
+			}
+			// 188 - 若对手处于异常状态则威力翻倍（消除对手防/特防强化在 ApplyEffect 中已做）
+			if skill.EffectID == 188 && finalDamage > 0 {
+				hasEnemyStatus := false
+				for i := 0; i < 20; i++ {
+					if battle.EnemyStatus[i] > 0 {
+						hasEnemyStatus = true
+						break
+					}
+				}
+				if hasEnemyStatus {
+					mul := uint64(finalDamage) * 2
+					if mul > math.MaxUint32 {
+						finalDamage = math.MaxUint32
+					} else {
+						finalDamage = uint32(mul)
+					}
+					if finalDamage > battle.EnemyHP {
+						finalDamage = battle.EnemyHP
+					}
+				}
+			}
+			// 100 - 自身体力越少则威力越大（伤害 *= 2 - HP/maxHP，满血1倍、空血2倍）
+			if skill.EffectID == 100 && finalDamage > 0 && battle.PlayerMaxHP > 0 {
+				ratio := 2.0 - float64(battle.PlayerHP)/float64(battle.PlayerMaxHP)
+				if ratio < 1.0 {
+					ratio = 1.0
+				}
+				if ratio > 2.0 {
+					ratio = 2.0
+				}
+				mul := uint64(float64(finalDamage) * ratio)
+				if mul > math.MaxUint32 {
+					finalDamage = math.MaxUint32
+				} else {
+					finalDamage = uint32(mul)
+				}
+				if finalDamage > battle.EnemyHP {
+					finalDamage = battle.EnemyHP
+				}
+			}
+			if !(skill.EffectID == 64 && hasAilment) && battle.PlayerStatus[gameskills.StatusIndexBurn] > 0 {
+				// 烧伤效果：被烧伤方造成的伤害减半
 				finalDamage = finalDamage / 2
 				if finalDamage < 1 {
 					finalDamage = 1
+				}
+			}
+			// 195/494 - 无视对手能力提升状态（在伤害计算阶段已通过不应用对手防御提升实现，此处无需额外处理）
+			// 179 - 若属性相同则技能威力提升 n（在伤害计算基础上附加百分比）
+			if skill.EffectID == 179 && finalDamage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				boost := 20
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					boost = effArgs[0]
+				}
+				if attackerPet != nil {
+					targetPet := petMgr.Get(battle.EnemyID)
+					if targetPet != nil && attackerPet.Type == targetPet.Type {
+						finalDamage = finalDamage * uint32(100+boost) / 100
+					}
+				}
+			}
+			// 129 - 对方为 X 性则技能威力翻倍
+			if skill.EffectID == 129 && finalDamage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				gender := 2
+				if len(effArgs) >= 1 {
+					gender = effArgs[0]
+				}
+				targetPet := petMgr.Get(battle.EnemyID)
+				if targetPet != nil && targetPet.Gender == gender {
+					mul := uint64(finalDamage) * 2
+					if mul > math.MaxUint32 {
+						finalDamage = math.MaxUint32
+					} else {
+						finalDamage = uint32(mul)
+					}
+				}
+			}
+			// 130 - 对方为 X 性则附加 n 点伤害
+			if skill.EffectID == 130 && finalDamage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				gender, bonus := 1, 100
+				if len(effArgs) >= 1 {
+					gender = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					bonus = effArgs[1]
+				}
+				targetPet := petMgr.Get(battle.EnemyID)
+				if targetPet != nil && targetPet.Gender == gender {
+					finalDamage += uint32(bonus)
+				}
+			}
+			// 131 - 对方为 X 性则免疫当前回合伤害
+			if skill.EffectID == 131 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				gender := 1
+				if len(effArgs) >= 1 {
+					gender = effArgs[0]
+				}
+				targetPet := petMgr.Get(battle.EnemyID)
+				if targetPet != nil && targetPet.Gender == gender {
+					finalDamage = 0
+					damageCalc = 0
+				}
+			}
+			// 135/447 - 造成的伤害不会低于 n
+			if (skill.EffectID == 135 || skill.EffectID == 447) && finalDamage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				floor := 80
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					floor = effArgs[0]
+				}
+				if finalDamage < uint32(floor) {
+					finalDamage = uint32(floor)
+				}
+			}
+			// 193 - 若对手处于 XX 状态则必定致命一击（若本次未暴击，则强制应用暴击倍率）
+			if skill.EffectID == 193 && finalDamage > 0 && !isCritPlayer {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				statusIdx := 5
+				if len(effArgs) >= 1 {
+					statusIdx = effArgs[0]
+				}
+				if statusIdx >= 0 && statusIdx < 20 && battle.EnemyStatus[statusIdx] > 0 {
+					isCritPlayer = true
+					mul := uint64(finalDamage) * 2
+					if mul > math.MaxUint32 {
+						finalDamage = math.MaxUint32
+					} else {
+						finalDamage = uint32(mul)
+					}
+				}
+			}
+			// 468 - 若自身处于能力下降状态则威力翻倍，同时解除能力下降状态
+			if skill.EffectID == 468 && finalDamage > 0 {
+				hasStatDrop := false
+				for i := 0; i < 6; i++ {
+					if battle.PlayerBattleLv[i] < 0 {
+						hasStatDrop = true
+						break
+					}
+				}
+				if hasStatDrop {
+					mul := uint64(finalDamage) * 2
+					if mul > math.MaxUint32 {
+						finalDamage = math.MaxUint32
+					} else {
+						finalDamage = uint32(mul)
+					}
+					for i := 0; i < 6; i++ {
+						if battle.PlayerBattleLv[i] < 0 {
+							battle.PlayerBattleLv[i] = 0
+						}
+					}
+				}
+			}
+			// 195 - 若对手处于异常状态则攻击力双倍
+			if skill.EffectID == 195 && finalDamage > 0 {
+				hasStatus := false
+				for i := 0; i < 20; i++ {
+					if battle.EnemyStatus[i] > 0 {
+						hasStatus = true
+						break
+					}
+				}
+				if hasStatus {
+					mul := uint64(finalDamage) * 2
+					if mul > math.MaxUint32 {
+						finalDamage = math.MaxUint32
+					} else {
+						finalDamage = uint32(mul)
+					}
+				}
+			}
+			// 180 - 只在第一回合有效果（若非第一回合，威力减半）
+			if skill.EffectID == 180 && finalDamage > 0 && battle.RoundCount > 1 {
+				finalDamage /= 2
+				if finalDamage < 1 {
+					finalDamage = 1
+				}
+			}
+			// 88 - n% 概率伤害为 m 倍
+			if skill.EffectID == 88 && finalDamage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				chance, mult := 10, 2
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					chance = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					mult = effArgs[1]
+				}
+				if rand.Intn(100) < chance {
+					mul := uint64(finalDamage) * uint64(mult)
+					if mul > math.MaxUint32 {
+						finalDamage = math.MaxUint32
+					} else {
+						finalDamage = uint32(mul)
+					}
+				}
+			}
+			// 35 - 对方能力等级越高伤害越大（每有一个正向等级加成 5%）
+			if skill.EffectID == 35 && finalDamage > 0 {
+				totalBoost := 0
+				for i := 0; i < 6; i++ {
+					if battle.EnemyBattleLv[i] > 0 {
+						totalBoost += int(battle.EnemyBattleLv[i])
+					}
+				}
+				if totalBoost > 0 {
+					mul := uint64(finalDamage) * uint64(100+totalBoost*5) / 100
+					if mul > math.MaxUint32 {
+						finalDamage = math.MaxUint32
+					} else {
+						finalDamage = uint32(mul)
+					}
+				}
+			}
+			// 111 - 攻击力越高附加伤害越大（攻击力每高出对手 10 点附加 1 点伤害）
+			if skill.EffectID == 111 && finalDamage > 0 {
+				playerPet := petMgr.Get(playerPetID)
+				enemyPet := petMgr.Get(battle.EnemyID)
+				if playerPet != nil && enemyPet != nil && playerPet.Atk > enemyPet.Atk {
+					bonus := uint32(playerPet.Atk-enemyPet.Atk) / 10
+					finalDamage += bonus
+				}
+			}
+			// 113 - 速度越高威力越大（速度每高出对手 10 点附加 1 点伤害）
+			if skill.EffectID == 113 && finalDamage > 0 {
+				playerPet := petMgr.Get(playerPetID)
+				enemyPet := petMgr.Get(battle.EnemyID)
+				if playerPet != nil && enemyPet != nil && playerPet.Spd > enemyPet.Spd {
+					bonus := uint32(playerPet.Spd-enemyPet.Spd) / 10
+					finalDamage += bonus
+				}
+			}
+			// 132 - 当前体力在对方体力以上时威力翻倍
+			if skill.EffectID == 132 && finalDamage > 0 && battle.PlayerHP >= battle.EnemyHP {
+				mul := uint64(finalDamage) * 2
+				if mul > math.MaxUint32 {
+					finalDamage = math.MaxUint32
+				} else {
+					finalDamage = uint32(mul)
+				}
+			}
+			// 168 - 若自身处于睡眠状态则威力翻倍
+			if skill.EffectID == 168 && finalDamage > 0 && battle.PlayerStatus[gameskills.StatusIndexSleep] > 0 {
+				mul := uint64(finalDamage) * 2
+				if mul > math.MaxUint32 {
+					finalDamage = math.MaxUint32
+				} else {
+					finalDamage = uint32(mul)
+				}
+			}
+			// 429 - 固定伤递增：基础 base 点，每次使用增加 increment，最高 max
+			if skill.EffectID == 429 && finalDamage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				base, increment, maxDmg := 25, 25, 100
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					base = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					increment = effArgs[1]
+				}
+				if len(effArgs) >= 3 && effArgs[2] > 0 {
+					maxDmg = effArgs[2]
+				}
+				current := uint32(base) + battle.PlayerFixedDmgIncrement
+				if current > uint32(maxDmg) {
+					current = uint32(maxDmg)
+				}
+				if current > battle.EnemyHP {
+					current = battle.EnemyHP
+				}
+				finalDamage += current
+				battle.PlayerFixedDmgIncrement += uint32(increment)
+				if battle.PlayerFixedDmgIncrement > uint32(maxDmg-base) {
+					battle.PlayerFixedDmgIncrement = uint32(maxDmg - base)
+				}
+			}
+			// 431 - 若自身处于能力下降状态则威力翻倍
+			if skill.EffectID == 431 && finalDamage > 0 {
+				hasStatDrop := false
+				for i := 0; i < 6; i++ {
+					if battle.PlayerBattleLv[i] < 0 {
+						hasStatDrop = true
+						break
+					}
+				}
+				if hasStatDrop {
+					mul := uint64(finalDamage) * 2
+					if mul > math.MaxUint32 {
+						finalDamage = math.MaxUint32
+					} else {
+						finalDamage = uint32(mul)
+					}
 				}
 			}
 			// 特性：坚硬(1024) —— 受到的伤害减少5%（仅作用于敌人对我方造成的伤害；此处为我方进攻，不处理）
@@ -8505,8 +9310,116 @@ func handleUseSkill(ctx *gameserver.HandlerContext) {
 				damageCalc = finalDamage
 			}
 		}
-		damage = finalDamage
+		// 42：本方电系技能伤害×2
+		if playerHit && battle.PlayerElectricBoostRounds > 0 && skill.Type == 5 {
+			finalDamage *= 2
+			if finalDamage > battle.EnemyHP {
+				finalDamage = battle.EnemyHP
+			}
+		}
+		// 敌方防御侧：46 挡一次 41 火抗 44 特防减半 50 物防减半 49 护盾 127 伤害减半
+		if playerHit && finalDamage > 0 {
+			if battle.EnemyBlockCount > 0 {
+				battle.EnemyBlockCount--
+				finalDamage = 0
+			} else {
+				// 127 - 敌方 n 回合内受到伤害减半
+				if battle.EnemyDamageHalfRounds > 0 {
+					finalDamage /= 2
+					if finalDamage < 1 {
+						finalDamage = 1
+					}
+				}
+				// 54：对方打我方伤害 1/m（此处我方攻击敌方，敌方有 54 则我方打敌方伤害 1/m）
+				if battle.EnemyDamageReductRounds > 0 && battle.EnemyDamageReduct > 0 {
+					finalDamage /= uint32(battle.EnemyDamageReduct)
+					if finalDamage < 1 {
+						finalDamage = 1
+					}
+				}
+				if battle.EnemyFireResistRounds > 0 && skill.Type == 3 {
+					finalDamage /= 2
+					if finalDamage < 1 {
+						finalDamage = 1
+					}
+				}
+				if battle.EnemySpDefHalfRounds > 0 && skill.Category == 2 {
+					finalDamage /= 2
+					if finalDamage < 1 {
+						finalDamage = 1
+					}
+				}
+				if battle.EnemyPhysDefHalfRounds > 0 && skill.Category == 1 {
+					finalDamage /= 2
+					if finalDamage < 1 {
+						finalDamage = 1
+					}
+				}
+				if battle.EnemyShieldPoints > 0 {
+					if finalDamage <= battle.EnemyShieldPoints {
+						battle.EnemyShieldPoints -= finalDamage
+						finalDamage = 0
+					} else {
+						finalDamage -= battle.EnemyShieldPoints
+						battle.EnemyShieldPoints = 0
+					}
+				}
+				if finalDamage > battle.EnemyHP {
+					finalDamage = battle.EnemyHP
+				}
+			}
+		}
+	// 68: 致死留 1 血（仅一次）
+	if playerHit && finalDamage > 0 && battle.EnemyEndureRounds > 0 && finalDamage >= battle.EnemyHP && battle.EnemyHP > 0 {
+		finalDamage = battle.EnemyHP - 1
+		battle.EnemyEndureRounds--
 	}
+	// 402 - 后出手时额外附加 n 点固定伤害
+	if playerHit && skill.EffectID == 402 && enemyFirst && finalDamage > 0 {
+		effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+		bonus := uint32(50)
+		if len(effArgs) >= 1 && effArgs[0] > 0 {
+			bonus = uint32(effArgs[0])
+		}
+		finalDamage += bonus
+		if finalDamage > battle.EnemyHP {
+			finalDamage = battle.EnemyHP
+		}
+	}
+	// 405 - 先出手时额外附加 n 点固定伤害
+	if playerHit && skill.EffectID == 405 && !enemyFirst && finalDamage > 0 {
+		effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+		bonus := uint32(50)
+		if len(effArgs) >= 1 && effArgs[0] > 0 {
+			bonus = uint32(effArgs[0])
+		}
+		finalDamage += bonus
+		if finalDamage > battle.EnemyHP {
+			finalDamage = battle.EnemyHP
+		}
+	}
+	// BOSS/特殊多效果：GM 配置的固定伤害等（如 976 简/极）
+	if playerHit && finalDamage > 0 {
+		eids := gameskills.ParseSideEffectIds(skill.SideEffect)
+		for _, eid := range eids {
+			p := GetBossEffectParams(eid)
+			if p.FixedDamage > 0 {
+				finalDamage += uint32(p.FixedDamage)
+			}
+		}
+		if finalDamage > battle.EnemyHP {
+			finalDamage = battle.EnemyHP
+		}
+	}
+	// 敌方 146：我方以物理攻击命中敌方时，敌方 n 回合内 m% 使对方（我方）中毒
+	if playerHit && finalDamage > 0 && skill.Category == 1 && battle.EnemyPoisonOnPhysHitRounds > 0 &&
+		battle.PlayerStatus[gameskills.StatusIndexPoison] == 0 {
+		if rand.Intn(100) < int(battle.EnemyPoisonOnPhysHitChance) {
+			battle.PlayerStatus[gameskills.StatusIndexPoison] = byte(rand.Intn(2) + 1)
+		}
+	}
+	damage = finalDamage
+}
 	// 疲惫或未命中时本回合不造成直接伤害
 	if skipPlayerAction || !playerHit {
 		damageCalc = 0
@@ -8622,12 +9535,696 @@ doPlayerTurn:
 				}
 				damageCalc = damage
 			}
+			// 488 - 对手体力小于 threshold 时伤害增加 percent%（生效一次后清零）
+			if battle.PlayerDamageBoostWhenEnemyLowThreshold > 0 && battle.EnemyHP < battle.PlayerDamageBoostWhenEnemyLowThreshold && damage > 0 {
+				damage = damage * (100 + uint32(battle.PlayerDamageBoostWhenEnemyLowPercent)) / 100
+				if damage > battle.EnemyHP {
+					damage = battle.EnemyHP
+				}
+				battle.PlayerDamageBoostWhenEnemyLowThreshold = 0
+				battle.PlayerDamageBoostWhenEnemyLowPercent = 0
+			}
+			// 84（敌方）- 受到物理攻击时 m% 几率将对手麻痹
+			if battle.EnemyParalyzeOnPhysHitRounds > 0 && skill.Category == 1 && damage > 0 &&
+				!sptboss.IsControlImmune(playerPetID) && battle.PlayerStatus[gameskills.StatusIndexParalysis] == 0 {
+				if rand.Intn(100) < int(battle.EnemyParalyzeOnPhysHitChance) {
+					battle.PlayerStatus[gameskills.StatusIndexParalysis] = byte(rand.Intn(2) + 2)
+				}
+			}
+			// 92（敌方）- 受到物理攻击时 m% 几率将对手冻伤
+			if battle.EnemyFreezeOnPhysHitRounds > 0 && skill.Category == 1 && damage > 0 &&
+				!sptboss.IsControlImmune(playerPetID) && battle.PlayerStatus[gameskills.StatusIndexFreeze] == 0 {
+				if rand.Intn(100) < int(battle.EnemyFreezeOnPhysHitChance) {
+					battle.PlayerStatus[gameskills.StatusIndexFreeze] = byte(rand.Intn(2) + 1)
+					dmg := battle.PlayerMaxHP / 8
+					if dmg > battle.PlayerHP {
+						dmg = battle.PlayerHP
+					}
+					battle.PlayerHP -= dmg
+				}
+			}
+			// 108（敌方）- 受到物理攻击时 m% 几率将对手烧伤
+			if battle.EnemyBurnOnPhysHitRounds > 0 && skill.Category == 1 && damage > 0 &&
+				!sptboss.IsStatusImmune(playerPetID) && battle.PlayerStatus[gameskills.StatusIndexBurn] == 0 {
+				if rand.Intn(100) < int(battle.EnemyBurnOnPhysHitChance) {
+					battle.PlayerStatus[gameskills.StatusIndexBurn] = byte(rand.Intn(2) + 1)
+					dmg := battle.PlayerMaxHP / 8
+					if dmg > battle.PlayerHP {
+						dmg = battle.PlayerHP
+					}
+					battle.PlayerHP -= dmg
+				}
+			}
+			// 89 - 每次造成伤害的 1/m 恢复体力
+			if battle.PlayerLifestealRounds > 0 && battle.PlayerLifestealDivisor > 0 && damage > 0 {
+				heal := damage / uint32(battle.PlayerLifestealDivisor)
+				if heal > 0 {
+					newHP := battle.PlayerHP + heal
+					if newHP > battle.PlayerMaxHP {
+						newHP = battle.PlayerMaxHP
+					}
+					battle.PlayerHP = newHP
+					effectGainHP += int32(heal)
+				}
+			}
+			// 104 - 每次直接攻击 m% 几率附带衰弱（随机能力 -1）
+			if battle.PlayerWeaknessOnHitRounds > 0 && skill.Category != 4 && damage > 0 &&
+				!sptboss.IsStatDropImmune(battle.EnemyID) {
+				if rand.Intn(100) < int(battle.PlayerWeaknessOnHitChance) {
+					stat := rand.Intn(6)
+					cur := int(battle.EnemyBattleLv[stat])
+					cur--
+					if cur < -6 {
+						cur = -6
+					}
+					battle.EnemyBattleLv[stat] = int8(cur)
+				}
+			}
+			// 109 - 造成伤害时 m% 几率令对手冻伤
+			if battle.PlayerFreezeOnDealDamageRounds > 0 && skill.Category != 4 && damage > 0 &&
+				!sptboss.IsControlImmune(battle.EnemyID) && battle.EnemyStatus[gameskills.StatusIndexFreeze] == 0 {
+				if rand.Intn(100) < int(battle.PlayerFreezeOnDealDamageChance) {
+					battle.EnemyStatus[gameskills.StatusIndexFreeze] = byte(rand.Intn(2) + 1)
+					dmg := battle.EnemyMaxHP / 8
+					if dmg > battle.EnemyHP {
+						dmg = battle.EnemyHP
+					}
+					battle.EnemyHP -= dmg
+				}
+			}
+			// 21（敌方） - 反弹伤害：敌方受到攻击时对玩家造成伤害的 1/divisor
+			if battle.EnemyReflectDamageRounds > 0 && battle.EnemyReflectDamageDivisor > 0 && damage > 0 {
+				reflectDmg := damage / uint32(battle.EnemyReflectDamageDivisor)
+				if reflectDmg > battle.PlayerHP {
+					reflectDmg = battle.PlayerHP
+				}
+				battle.PlayerHP -= reflectDmg
+			}
+			// 463（敌方）- n 回合内每回合所受的伤害减少 m 点
+			if battle.EnemyDamageReducePerRoundRounds > 0 && battle.EnemyDamageReducePerRoundAmount > 0 && damage > 0 {
+				if damage > battle.EnemyDamageReducePerRoundAmount {
+					damage -= battle.EnemyDamageReducePerRoundAmount
+				} else {
+					damage = 0
+				}
+			}
+			// 125（敌方）- n 回合内被攻击时减少受到的伤害上限 m
+			if battle.EnemyDamageCapRounds > 0 && battle.EnemyDamageCap > 0 && damage > battle.EnemyDamageCap {
+				damage = battle.EnemyDamageCap
+			}
+			// 123（敌方）- n 回合内受到任何伤害时自身 XX 提高 m 级（在 128 前判定，以「受到伤害」为准）
+			if battle.EnemyHurtStatBoostRounds > 0 && damage > 0 {
+				stat := int(battle.EnemyHurtStatBoostStat)
+				if stat >= 0 && stat < 6 {
+					cur := int(battle.EnemyBattleLv[stat]) + int(battle.EnemyHurtStatBoostStages)
+					if cur > 6 {
+						cur = 6
+					}
+					if cur < -6 {
+						cur = -6
+					}
+					battle.EnemyBattleLv[stat] = int8(cur)
+				}
+			}
+			// 128（敌方）- n 回合内接受的物理伤害转化为体力恢复
+			if battle.EnemyPhysDmgToHealRounds > 0 && skill.Category == 1 && damage > 0 {
+				heal := damage
+				newHP := battle.EnemyHP + heal
+				if newHP > battle.EnemyMaxHP {
+					newHP = battle.EnemyMaxHP
+				}
+				battle.EnemyHP = newHP
+				damage = 0
+			}
 			battle.EnemyHP -= damage
 			if battle.EnemyHP > battle.EnemyMaxHP {
 				battle.EnemyHP = 0 // uint 下溢时变为极大值，统一置 0
 			}
 			if battle.EnemyHP == 0 {
 				battle.LastHitWasCrit = isCritPlayer
+			}
+			// 110（敌方）- n 回合内每次受到攻击时 m% 几率使对手 stat 等级 -1
+			if battle.EnemyDefendStatDropRounds > 0 && damage > 0 &&
+				!sptboss.IsStatDropImmune(playerPetID) && battle.PlayerImmuneStatDropRounds == 0 {
+				if rand.Intn(100) < int(battle.EnemyDefendStatDropChance) {
+					stat := int(battle.EnemyDefendStatDropStat)
+					cur := int(battle.PlayerBattleLv[stat]) - 1
+					if cur < -6 {
+						cur = -6
+					}
+					battle.PlayerBattleLv[stat] = int8(cur)
+				}
+			}
+			// 116（敌方）- n 回合内每次受到攻击造成伤害的 1/5 恢复自身体力
+			if battle.EnemyDefendHealRounds > 0 && damage > 0 {
+				heal := damage / 5
+				if heal > 0 {
+					newHP := battle.EnemyHP + heal
+					if newHP > battle.EnemyMaxHP {
+						newHP = battle.EnemyMaxHP
+					}
+					battle.EnemyHP = newHP
+				}
+			}
+			// 117（敌方）- n 回合内每次受到攻击 m% 概率使对手疲惫 1~3 回合
+			if battle.EnemyDefendFatigueRounds > 0 && damage > 0 &&
+				!sptboss.IsControlImmune(playerPetID) && battle.PlayerStatus[gameskills.StatusIndexFatigue] == 0 {
+				if rand.Intn(100) < int(battle.EnemyDefendFatigueChance) {
+					battle.PlayerStatus[gameskills.StatusIndexFatigue] = byte(rand.Intn(3) + 1)
+				}
+			}
+			// 107 - 若本次攻击造成的伤害小于 n 则自身 xx 等级提升 1
+			if playerHit && skill.EffectID == 107 && skill.Category != 4 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				if len(effArgs) >= 2 {
+					thresh, statIdx := effArgs[0], effArgs[1]
+					if statIdx >= 0 && statIdx < 6 && damage < uint32(thresh) {
+						cur := int(battle.PlayerBattleLv[statIdx])
+						cur++
+						if cur > 6 {
+							cur = 6
+						}
+						battle.PlayerBattleLv[statIdx] = int8(cur)
+					}
+				}
+			}
+			// 172 - 若后出手，则造成伤害的 1/n 恢复自身体力
+			if playerHit && skill.EffectID == 172 && enemyFirst && damage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				divisor := 3
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					divisor = effArgs[0]
+				}
+				heal := damage / uint32(divisor)
+				if heal > 0 {
+					newHP := battle.PlayerHP + heal
+					if newHP > battle.PlayerMaxHP {
+						newHP = battle.PlayerMaxHP
+					}
+					battle.PlayerHP = newHP
+					effectGainHP += int32(heal)
+				}
+			}
+			// 458 - 若先出手则造成攻击伤害的 n% 恢复自身体力
+			if playerHit && skill.EffectID == 458 && !enemyFirst && damage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				pct := 50
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					pct = effArgs[0]
+				}
+				heal := damage * uint32(pct) / 100
+				if heal > 0 {
+					newHP := battle.PlayerHP + heal
+					if newHP > battle.PlayerMaxHP {
+						newHP = battle.PlayerMaxHP
+					}
+					battle.PlayerHP = newHP
+					effectGainHP += int32(heal)
+				}
+			}
+			// 459 - 附加对手防御值 m% 的固定伤害
+			if playerHit && skill.EffectID == 459 && damage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				pct := 20
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					pct = effArgs[0]
+				}
+				defVal := uint32(enemyStats.Defence)
+				if skill.Category == 2 {
+					defVal = uint32(enemyStats.SpDef)
+				}
+				bonus := defVal * uint32(pct) / 100
+				if bonus > 0 && bonus <= battle.EnemyHP {
+					battle.EnemyHP -= bonus
+				} else if bonus > battle.EnemyHP {
+					battle.EnemyHP = 0
+				}
+			}
+			// 461 - 使用后若自身体力低于 1/m 则从下回合开始必定致命一击（复用 PlayerCritBuffRounds）
+			if playerHit && skill.EffectID == 461 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				divisor := 3
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					divisor = effArgs[0]
+				}
+				if battle.PlayerMaxHP > 0 && battle.PlayerHP < battle.PlayerMaxHP/uint32(divisor) {
+					battle.PlayerCritBuffRounds = 3
+				}
+			}
+			// 463 - n 回合内每回合所受的伤害减少 m 点（设置回合状态）
+			if playerHit && skill.EffectID == 463 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds, amount := 2, 150
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					amount = effArgs[1]
+				}
+				if rounds > 10 {
+					rounds = 10
+				}
+				battle.PlayerDamageReducePerRoundRounds = byte(rounds)
+				battle.PlayerDamageReducePerRoundAmount = uint32(amount)
+			}
+			// 474 - 先出手时 m% 自身 stat 等级 +n
+			if playerHit && skill.EffectID == 474 && !enemyFirst {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				stat, chance, stages := 2, 100, 1
+				if len(effArgs) >= 1 {
+					stat = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if len(effArgs) >= 3 && effArgs[2] > 0 {
+					stages = effArgs[2]
+				}
+				if stat >= 0 && stat < 6 && rand.Intn(100) < chance {
+					cur := int(battle.PlayerBattleLv[stat]) + stages
+					if cur > 6 {
+						cur = 6
+					}
+					if cur < -6 {
+						cur = -6
+					}
+					battle.PlayerBattleLv[stat] = int8(cur)
+				}
+			}
+			// 475 - 若造成的伤害不足 m，则下 n 回合的攻击必定致命一击
+			if playerHit && skill.EffectID == 475 && damage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				threshold, rounds := 300, 2
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					threshold = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					rounds = effArgs[1]
+				}
+				if damage < uint32(threshold) {
+					battle.PlayerCritBuffRounds = byte(rounds + 1)
+				}
+			}
+			// 476 - 后出手时恢复 m 点体力
+			if playerHit && skill.EffectID == 476 && enemyFirst {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				amount := 100
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					amount = effArgs[0]
+				}
+				newHP := battle.PlayerHP + uint32(amount)
+				if newHP > battle.PlayerMaxHP {
+					newHP = battle.PlayerMaxHP
+				}
+				battle.PlayerHP = newHP
+				effectGainHP += int32(amount)
+			}
+			// 186 - 后出手时 m% 自身 stat 等级 +n
+			if playerHit && skill.EffectID == 186 && enemyFirst {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				stat, chance, stages := 0, 100, 1
+				if len(effArgs) >= 1 {
+					stat = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if len(effArgs) >= 3 && effArgs[2] > 0 {
+					stages = effArgs[2]
+				}
+				if stat >= 0 && stat < 6 && rand.Intn(100) < chance {
+					cur := int(battle.PlayerBattleLv[stat]) + stages
+					if cur > 6 {
+						cur = 6
+					}
+					battle.PlayerBattleLv[stat] = int8(cur)
+				}
+			}
+			// 122 - 先出手时 m% 对方 stat 等级降低 n
+			if playerHit && skill.EffectID == 122 && !enemyFirst && !sptboss.IsStatDropImmune(battle.EnemyID) {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				stat, chance, stages := 0, 50, -1
+				if len(effArgs) >= 1 {
+					stat = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if len(effArgs) >= 3 {
+					stages = effArgs[2]
+				}
+				if stat >= 0 && stat < 6 && rand.Intn(100) < chance {
+					cur := int(battle.EnemyBattleLv[stat]) + stages
+					if cur < -6 {
+						cur = -6
+					}
+					if cur > 6 {
+						cur = 6
+					}
+					battle.EnemyBattleLv[stat] = int8(cur)
+				}
+			}
+			// 148 - 后出手时 m% 对方 stat 等级降低 n
+			if playerHit && skill.EffectID == 148 && enemyFirst && !sptboss.IsStatDropImmune(battle.EnemyID) {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				stat, chance, stages := 0, 50, -1
+				if len(effArgs) >= 1 {
+					stat = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if len(effArgs) >= 3 {
+					stages = effArgs[2]
+				}
+				if stat >= 0 && stat < 6 && rand.Intn(100) < chance {
+					cur := int(battle.EnemyBattleLv[stat]) + stages
+					if cur < -6 {
+						cur = -6
+					}
+					if cur > 6 {
+						cur = 6
+					}
+					battle.EnemyBattleLv[stat] = int8(cur)
+				}
+			}
+			// 147 - 后出手时 n% 概率使对方 XX
+			if playerHit && skill.EffectID == 147 && enemyFirst && !sptboss.IsStatusImmune(battle.EnemyID) {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				chance, statusIdx := 30, 6
+				if len(effArgs) >= 1 {
+					chance = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					statusIdx = effArgs[1]
+				}
+				if statusIdx >= 0 && statusIdx < 20 && rand.Intn(100) < chance {
+					if battle.EnemyStatus[statusIdx] == 0 {
+						battle.EnemyStatus[statusIdx] = byte(rand.Intn(2) + 2)
+					}
+				}
+			}
+			// 173 - 先出手时 n% 概率使对方 XX
+			if playerHit && skill.EffectID == 173 && !enemyFirst && !sptboss.IsStatusImmune(battle.EnemyID) {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				chance, statusIdx := 30, 6
+				if len(effArgs) >= 1 {
+					chance = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					statusIdx = effArgs[1]
+				}
+				if statusIdx >= 0 && statusIdx < 20 && rand.Intn(100) < chance {
+					if battle.EnemyStatus[statusIdx] == 0 {
+						battle.EnemyStatus[statusIdx] = byte(rand.Intn(2) + 2)
+					}
+				}
+			}
+
+			// 484 - 连击 n 次，每次附加 bonus 点固定伤害（简化：附加 n*bonus 点固定伤害）
+			if playerHit && skill.EffectID == 484 && damage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				times, bonus := 5, 1
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					times = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					bonus = effArgs[1]
+				}
+				totalBonus := uint32(times * bonus)
+				if totalBonus > 0 && battle.EnemyHP > 0 {
+					if totalBonus > battle.EnemyHP {
+						totalBonus = battle.EnemyHP
+					}
+					battle.EnemyHP -= totalBonus
+				}
+			}
+			// 428 - 遇到天敌时附加 m 点固定伤害（仅当属性克制 typeMod > 1 时生效）
+			if playerHit && skill.EffectID == 428 && damage > 0 {
+				enemyPet := petMgr.Get(battle.EnemyID)
+				typeMod := 1.0
+				if enemyPet != nil {
+					typeMod = gamebattle.GetTypeMultiplierDual(skill.Type, enemyPet.Type, enemyPet.Type2)
+				}
+				if typeMod > 1.0 && battle.EnemyHP > 0 {
+					effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+					bonus := uint32(50)
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						bonus = uint32(effArgs[0])
+					}
+					if bonus > 0 {
+						if bonus > battle.EnemyHP {
+							bonus = battle.EnemyHP
+						}
+						battle.EnemyHP -= bonus
+					}
+				}
+			}
+			// 464 - 命中时 m% 概率使对方烧伤
+			if playerHit && skill.EffectID == 464 && damage > 0 && !sptboss.IsStatusImmune(battle.EnemyID) && battle.EnemyImmuneStatusRounds == 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				chance := 30
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					chance = effArgs[0]
+				}
+				if rand.Intn(100) < chance && battle.EnemyStatus[gameskills.StatusIndexBurn] == 0 {
+					battle.EnemyStatus[gameskills.StatusIndexBurn] = byte(rand.Intn(2) + 1)
+					dmg := battle.EnemyMaxHP / 8
+					if dmg > battle.EnemyHP {
+						dmg = battle.EnemyHP
+					}
+					battle.EnemyHP -= dmg
+				}
+			}
+			// 115 - n% 概率附加速度的 1/m 点固定伤害
+			if playerHit && skill.EffectID == 115 && damage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				chance, divisor := 30, 2
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					chance = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					divisor = effArgs[1]
+				}
+				if rand.Intn(100) < chance {
+					bonus := uint32(playerStats.Speed) / uint32(divisor)
+					if bonus > 0 && battle.EnemyHP > 0 {
+						if bonus > battle.EnemyHP {
+							bonus = battle.EnemyHP
+						}
+						battle.EnemyHP -= bonus
+					}
+				}
+			}
+			// 119 - 伤害为偶数时 30% 疲惫 +1 回合；奇数时 30% 速度 +1
+			if playerHit && skill.EffectID == 119 && damage > 0 {
+				if damage%2 == 0 {
+					if !sptboss.IsControlImmune(battle.EnemyID) && rand.Intn(100) < 30 {
+						if battle.EnemyStatus[gameskills.StatusIndexFatigue] == 0 {
+							battle.EnemyStatus[gameskills.StatusIndexFatigue] = 1
+						}
+					}
+				} else {
+					if rand.Intn(100) < 30 {
+						cur := int(battle.PlayerBattleLv[gameskills.StatSpeed]) + 1
+						if cur > 6 {
+							cur = 6
+						}
+						battle.PlayerBattleLv[gameskills.StatSpeed] = int8(cur)
+					}
+				}
+			}
+			// 134 - 造成的伤害低于 n，则自身所有技能的 PP +m
+			if playerHit && skill.EffectID == 134 && damage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				threshold, ppBonus := 100, 1
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					threshold = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					ppBonus = effArgs[1]
+				}
+				if damage < uint32(threshold) {
+					for i := 0; i < 4; i++ {
+						if battle.PlayerSkillPP[i] > 0 {
+							newPP := int(battle.PlayerSkillPP[i]) + ppBonus
+							if newPP > 255 {
+								newPP = 255
+							}
+							battle.PlayerSkillPP[i] = byte(newPP)
+						}
+					}
+				}
+			}
+			// 188 - 若自身处于异常状态，则附加对应的反击效果（烧伤→烧伤对手，冻伤→冻伤对手，中毒→中毒对手）
+			if playerHit && skill.EffectID == 188 && damage > 0 && !sptboss.IsStatusImmune(battle.EnemyID) {
+				if battle.PlayerStatus[gameskills.StatusIndexBurn] > 0 && battle.EnemyStatus[gameskills.StatusIndexBurn] == 0 {
+					battle.EnemyStatus[gameskills.StatusIndexBurn] = byte(rand.Intn(2) + 1)
+					dmg := battle.EnemyMaxHP / 8
+					if dmg > battle.EnemyHP {
+						dmg = battle.EnemyHP
+					}
+					battle.EnemyHP -= dmg
+				} else if battle.PlayerStatus[gameskills.StatusIndexFreeze] > 0 && battle.EnemyStatus[gameskills.StatusIndexFreeze] == 0 {
+					battle.EnemyStatus[gameskills.StatusIndexFreeze] = byte(rand.Intn(2) + 1)
+					dmg := battle.EnemyMaxHP / 8
+					if dmg > battle.EnemyHP {
+						dmg = battle.EnemyHP
+					}
+					battle.EnemyHP -= dmg
+				} else if battle.PlayerStatus[gameskills.StatusIndexPoison] > 0 && battle.EnemyStatus[gameskills.StatusIndexPoison] == 0 {
+					battle.EnemyStatus[gameskills.StatusIndexPoison] = byte(rand.Intn(2) + 1)
+					dmg := battle.EnemyMaxHP / 8
+					if dmg > battle.EnemyHP {
+						dmg = battle.EnemyHP
+					}
+					battle.EnemyHP -= dmg
+				}
+			}
+			// 181 - n% 概率使对手XX，每次使用m%增加，最高k%（累积几率）
+			// SideEffectArg: statusIndex chance increment maxChance
+			if playerHit && skill.EffectID == 181 && !sptboss.IsStatusImmune(battle.EnemyID) && battle.EnemyImmuneStatusRounds == 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				statusIdx, baseChance, increment, maxChance := gameskills.StatusIndexBurn, 30, 10, 100
+				if len(effArgs) >= 1 {
+					statusIdx = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					baseChance = effArgs[1]
+				}
+				if len(effArgs) >= 3 && effArgs[2] > 0 {
+					increment = effArgs[2]
+				}
+				if len(effArgs) >= 4 && effArgs[3] > 0 {
+					maxChance = effArgs[3]
+				}
+				// 若是第一次使用，初始化
+				if battle.Player181CurrentChance == 0 {
+					battle.Player181CurrentChance = byte(baseChance)
+					battle.Player181StatusIdx = byte(statusIdx)
+					battle.Player181MaxChance = byte(maxChance)
+					battle.Player181Increment = byte(increment)
+				}
+				currentChance := int(battle.Player181CurrentChance)
+				if statusIdx >= 0 && statusIdx < 20 && rand.Intn(100) < currentChance {
+					if battle.EnemyStatus[statusIdx] == 0 {
+						battle.EnemyStatus[statusIdx] = byte(rand.Intn(2) + 2)
+					}
+				}
+				// 增加几率
+				newChance := currentChance + increment
+				if newChance > maxChance {
+					newChance = maxChance
+				}
+				battle.Player181CurrentChance = byte(newChance)
+			}
+			// 441 - 每次攻击暴击率 +n%，最高 m%（以 1/16 为单位累积）
+			if playerHit && skill.EffectID == 441 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				increment, maxBonus := 1, 8
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					increment = effArgs[0] / 6
+					if increment < 1 {
+						increment = 1
+					}
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					maxBonus = effArgs[1] / 6
+					if maxBonus < 1 {
+						maxBonus = 1
+					}
+				}
+				newBonus := int(battle.PlayerCritRateBonus) + increment
+				if newBonus > maxBonus {
+					newBonus = maxBonus
+				}
+				if newBonus > 16 {
+					newBonus = 16
+				}
+				battle.PlayerCritRateBonus = byte(newBonus)
+			}
+			// 490 - 若造成伤害超过 m，则自身速度 +n 级
+			if playerHit && skill.EffectID == 490 && damage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				threshold, stages := 200, 1
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					threshold = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					stages = effArgs[1]
+				}
+				if damage > uint32(threshold) {
+					cur := int(battle.PlayerBattleLv[gameskills.StatSpeed]) + stages
+					if cur > 6 {
+						cur = 6
+					}
+					battle.PlayerBattleLv[gameskills.StatSpeed] = int8(cur)
+				}
+			}
+			// 66/67/158 - 当次攻击击败对方时
+			if enemyHPBeforeAction > 0 && battle.EnemyHP == 0 && playerHit {
+				eids := gameskills.ParseSideEffectIds(skill.SideEffect)
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				offset := 0
+				for _, eid := range eids {
+					n := gameskills.EffectArgCount(eid)
+					if offset+n > len(effArgs) {
+						break
+					}
+					if eid == 66 {
+						div := 2
+						if n > 0 && effArgs[offset] > 0 {
+							div = effArgs[offset]
+						}
+						heal := battle.PlayerMaxHP / uint32(div)
+						if heal > 0 {
+							battle.PlayerHP += heal
+							if battle.PlayerHP > battle.PlayerMaxHP {
+								battle.PlayerHP = battle.PlayerMaxHP
+							}
+						}
+					}
+					if eid == 67 {
+						if n > 0 && effArgs[offset] > 0 {
+							battle.EnemyKillReduceMaxHpDivisor = byte(effArgs[offset])
+						}
+					}
+					// 158 - 当次攻击击败对手，则 m% 自身 stat 等级 +n
+					if eid == 158 && n >= 3 {
+						stat, chance, stages := effArgs[offset], effArgs[offset+1], effArgs[offset+2]
+						if stat >= 0 && stat < 6 && rand.Intn(100) < chance {
+							cur := int(battle.PlayerBattleLv[stat]) + stages
+							if cur > 6 {
+								cur = 6
+							}
+							if cur < -6 {
+								cur = -6
+							}
+							battle.PlayerBattleLv[stat] = int8(cur)
+						}
+					}
+					// 421 - 击败对手时，将对手的能力强化转移到自身
+					if eid == 421 {
+						for i := 0; i < 6; i++ {
+							if battle.EnemyBattleLv[i] > 0 {
+								cur := int(battle.PlayerBattleLv[i]) + int(battle.EnemyBattleLv[i])
+								if cur > 6 {
+									cur = 6
+								}
+								battle.PlayerBattleLv[i] = int8(cur)
+								battle.EnemyBattleLv[i] = 0
+							}
+						}
+					}
+					// 185 - 若击败处于 XX 状态的对手，则下一只出场的对手也进入 XX 状态
+					if eid == 185 && n >= 1 {
+						statusIdx := effArgs[offset]
+						if statusIdx >= 0 && statusIdx < 20 && battle.EnemyStatus[statusIdx] > 0 {
+							battle.PlayerTransferStatusToNextEnemy = byte(statusIdx)
+						}
+					}
+					offset += n
+				}
 			}
 
 			// 特性：汲取(1039) —— 攻击命中后吸取命中伤害的8%体力
@@ -8643,10 +10240,9 @@ doPlayerTurn:
 				}
 			}
 
-			// 不灭之火（技能ID 11023）：5回合内令对手每回合受到30点固定伤害。
-			// 这里不走通用 EffectID，而是直接按技能 ID 识别，避免误伤其它 SideEffect=60 的老技能。
+			// effect 60：n回合内,每回合附加m点固定伤害
 			// SideEffectArg: rounds damagePerTurn（例如 "5 30" 表示当前回合 + 之后4回合，每次自己出手后都额外扣30点固定伤害）
-			if skill.ID == 11023 {
+			if skill.EffectID == 60 {
 				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
 				rounds, perTurn := 0, 0
 				if len(effArgs) >= 1 {
@@ -8666,14 +10262,282 @@ doPlayerTurn:
 					battle.EnemyFixedDotDamage = uint32(perTurn)
 				}
 			}
+			// effect 76：m% 几率在 n 回合内每回合造成 k 点固定伤害
+			if skill.EffectID == 76 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				chance, rounds, perTurn := 100, 0, 0
+				if len(effArgs) >= 1 {
+					chance = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					rounds = effArgs[1]
+				}
+				if len(effArgs) >= 3 {
+					perTurn = effArgs[2]
+				}
+				if chance < 0 {
+					chance = 0
+				}
+				if chance > 100 {
+					chance = 100
+				}
+				if rounds > 0 && perTurn > 0 && rand.Intn(100) < chance {
+					battle.EnemyFixedDotRounds = byte(rounds)
+					battle.EnemyFixedDotDamage = uint32(perTurn)
+				}
+			}
+			// effect 77：n 回合内每次使用技能恢复 m 点体力（含当回合使用）
+			if skill.EffectID == 77 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds, amount := 0, 0
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					amount = effArgs[1]
+				}
+				if rounds > 0 && amount > 0 {
+					battle.PlayerRegenPerUseRounds = byte(rounds)
+					battle.PlayerRegenPerUseAmount = uint32(amount)
+				}
+			}
+			// effect 78：n 回合内物理攻击对自身必定 miss
+			if skill.EffectID == 78 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds := 0
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if rounds > 0 {
+					battle.PlayerPhysMissRounds = byte(rounds)
+				}
+			}
+			// effect 83：自身雄性下两回合必定先手；雌性下两回合必定暴击
+			if skill.EffectID == 83 && attackerPet != nil {
+				if attackerPet.Gender == 1 {
+					battle.PlayerMaleFirstStrikeRounds = 2
+				} else if attackerPet.Gender == 2 {
+					battle.PlayerFemaleCritRounds = 2
+				}
+			}
+			// effect 84：n 回合内受到物理攻击时 m% 几率将对手麻痹
+			if skill.EffectID == 84 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds, chance := 5, 50
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.PlayerParalyzeOnPhysHitRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.PlayerParalyzeOnPhysHitChance = byte(chance)
+				}
+			}
+			// effect 86/106：n 回合内属性（特殊）攻击对自身必定 miss
+			if skill.EffectID == 86 || skill.EffectID == 106 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds := 0
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if rounds > 0 {
+					battle.PlayerSpecialMissRounds = byte(rounds)
+				}
+			}
+			// effect 89：n 回合内每次造成伤害的 1/m 恢复体力
+			if skill.EffectID == 89 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds, div := 0, 4
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					div = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.PlayerLifestealRounds = byte(rounds)
+					battle.PlayerLifestealDivisor = byte(div)
+				}
+			}
+			// effect 90：n 回合内自身造成的伤害为 m 倍（同 53）
+			if skill.EffectID == 90 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds, mult := 0, 2
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					mult = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.PlayerDamageMultRounds = byte(rounds)
+					battle.PlayerDamageMult = byte(mult)
+				}
+			}
+			// effect 92：n 回合内受到物理攻击时 m% 几率将对手冻伤
+			if skill.EffectID == 92 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds, chance := 5, 50
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.PlayerFreezeOnPhysHitRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.PlayerFreezeOnPhysHitChance = byte(chance)
+				}
+			}
+			// effect 98：n 回合内对雄性精灵的伤害为 m 倍
+			if skill.EffectID == 98 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds, mult := 0, 2
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					mult = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.PlayerMaleDamageMultRounds = byte(rounds)
+					battle.PlayerMaleDamageMult = byte(mult)
+				}
+			}
+			// effect 104：n 回合内每次直接攻击 m% 几率附带衰弱
+			if skill.EffectID == 104 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds, chance := 0, 50
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.PlayerWeaknessOnHitRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.PlayerWeaknessOnHitChance = byte(chance)
+				}
+			}
+			// effect 108：n 回合内受到物理攻击时 m% 几率将对手烧伤
+			if skill.EffectID == 108 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds, chance := 5, 50
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.PlayerBurnOnPhysHitRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.PlayerBurnOnPhysHitChance = byte(chance)
+				}
+			}
+			// effect 109：n 回合内造成伤害时 m% 几率令对手冻伤
+			if skill.EffectID == 109 {
+				effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+				rounds, chance := 5, 50
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.PlayerFreezeOnDealDamageRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.PlayerFreezeOnDealDamageChance = byte(chance)
+				}
+			}
+			// 77（已有状态）：每次使用技能恢复 m 点体力（非 77 技能时也生效）
+			if playerHit && battle.PlayerRegenPerUseRounds > 0 && battle.PlayerRegenPerUseAmount > 0 {
+				heal := battle.PlayerRegenPerUseAmount
+				if heal > battle.PlayerMaxHP-battle.PlayerHP {
+					heal = battle.PlayerMaxHP - battle.PlayerHP
+				}
+				if heal > 0 {
+					battle.PlayerHP += heal
+					effectGainHP += int32(heal)
+				}
+			}
 
 		var effectRecoil uint32
+		// 91 - 镜像前保存旧值，ApplyEffect 后若镜像回合>0 则双方能力/状态变化同步
+		var oldPlayerLv [6]int8
+		var oldEnemyLv [6]int8
+		var oldPlayerStatus, oldEnemyStatus [20]byte
+		if battle.PlayerStatusMirrorRounds > 0 {
+			oldPlayerLv = battle.PlayerBattleLv
+			oldEnemyLv = battle.EnemyBattleLv
+			oldPlayerStatus = battle.PlayerStatus
+			oldEnemyStatus = battle.EnemyStatus
+		}
 		effectGainHP, effectRecoil = gameskills.ApplyEffect(skill, damage,
 			&battle.PlayerHP, &battle.EnemyHP,
 			battle.PlayerMaxHP, battle.EnemyMaxHP,
 			&battle.PlayerBattleLv, &battle.EnemyBattleLv,
-			&battle.PlayerStatus, &battle.EnemyStatus, battle.EnemyID)
+			&battle.PlayerStatus, &battle.EnemyStatus, battle.EnemyID,
+			battle.EnemyImmuneStatDropRounds, battle.EnemyImmuneStatusRounds)
 		_ = effectRecoil
+		if battle.PlayerStatusMirrorRounds > 0 {
+			for i := 0; i < 6; i++ {
+				deltaE := int(battle.EnemyBattleLv[i]) - int(oldEnemyLv[i])
+				deltaP := int(battle.PlayerBattleLv[i]) - int(oldPlayerLv[i])
+				v := int(oldPlayerLv[i]) + deltaE + deltaP
+				if v > 6 {
+					v = 6
+				}
+				if v < -6 {
+					v = -6
+				}
+				battle.PlayerBattleLv[i] = int8(v)
+				v = int(oldEnemyLv[i]) + deltaE + deltaP
+				if v > 6 {
+					v = 6
+				}
+				if v < -6 {
+					v = -6
+				}
+				battle.EnemyBattleLv[i] = int8(v)
+			}
+			for i := 0; i < 20; i++ {
+				deltaE := int(battle.EnemyStatus[i]) - int(oldEnemyStatus[i])
+				deltaP := int(battle.PlayerStatus[i]) - int(oldPlayerStatus[i])
+				v := int(oldPlayerStatus[i]) + deltaE + deltaP
+				if v < 0 {
+					v = 0
+				}
+				if v > 10 {
+					v = 10
+				}
+				battle.PlayerStatus[i] = byte(v)
+				v = int(oldEnemyStatus[i]) + deltaE + deltaP
+				if v < 0 {
+					v = 0
+				}
+				if v > 10 {
+					v = 10
+				}
+				battle.EnemyStatus[i] = byte(v)
+			}
+		}
 
 		// 暴击率提升效果（SideEffect 58 系列）：SideEffectArg[0] = 持续回合数
 		// 表现：下 n 回合内，自身使用“攻击技能”时必定打出致命一击。
@@ -8692,6 +10556,589 @@ doPlayerTurn:
 			}
 		}
 
+		// 多效果技能（如 43 508、1635）：按 SideEffect 列表依次消耗参数并设置回合状态
+		if playerHit {
+			eids := gameskills.ParseSideEffectIds(skill.SideEffect)
+			effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+			offset := 0
+			for _, eid := range eids {
+				n := gameskills.EffectArgCount(eid)
+				if offset+n > len(effArgs) {
+					break
+				}
+				subArgs := effArgs[offset : offset+n]
+				offset += n
+				switch eid {
+				case 58: // 下 n 回合攻击技能必定暴击（多效果时也生效）
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						rounds := subArgs[0]
+						if rounds > 10 {
+							rounds = 10
+						}
+						battle.PlayerCritBuffRounds = byte(rounds + 1)
+					}
+				case 508: // 减少 m 点下回合所受的伤害（魂之再生等）
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerNextTurnDamageReduce = uint32(subArgs[0])
+					}
+				case 81: // 下 n 回合自身攻击技能必定命中
+					rounds := 3
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						rounds = subArgs[0]
+					}
+					if rounds > 10 {
+						rounds = 10
+					}
+					battle.PlayerMustHitRounds = byte(rounds + 1) // +1 使本回合也生效
+				case 60: // n 回合内每回合附加 m 点固定伤害
+					if len(subArgs) >= 2 && subArgs[0] > 0 && subArgs[1] > 0 {
+						battle.EnemyFixedDotRounds = byte(subArgs[0])
+						battle.EnemyFixedDotDamage = uint32(subArgs[1])
+					}
+				case 76: // m% 几率 n 回合每回合 k 点固定伤害
+					if len(subArgs) >= 3 && subArgs[1] > 0 && subArgs[2] > 0 {
+						chance := 100
+						if subArgs[0] > 0 {
+							chance = subArgs[0]
+						}
+						if rand.Intn(100) < chance {
+							battle.EnemyFixedDotRounds = byte(subArgs[1])
+							battle.EnemyFixedDotDamage = uint32(subArgs[2])
+						}
+					}
+				case 77: // n 回合内每次使用技能恢复 m 点体力
+					if len(subArgs) >= 2 && subArgs[0] > 0 && subArgs[1] > 0 {
+						battle.PlayerRegenPerUseRounds = byte(subArgs[0])
+						battle.PlayerRegenPerUseAmount = uint32(subArgs[1])
+					}
+				case 78: // n 回合内物理攻击对自身必定 miss
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerPhysMissRounds = byte(subArgs[0])
+					}
+				case 83: // 自身雄性下两回合必定先手；雌性下两回合必定暴击
+					if attackerPet != nil {
+						if attackerPet.Gender == 1 {
+							battle.PlayerMaleFirstStrikeRounds = 2
+						} else if attackerPet.Gender == 2 {
+							battle.PlayerFemaleCritRounds = 2
+						}
+					}
+				case 84: // n 回合内受到物理攻击时 m% 几率将对手麻痹
+					if len(subArgs) >= 2 && subArgs[0] > 0 {
+						battle.PlayerParalyzeOnPhysHitRounds = byte(subArgs[0])
+						chance := subArgs[1]
+						if chance > 100 {
+							chance = 100
+						}
+						battle.PlayerParalyzeOnPhysHitChance = byte(chance)
+					}
+				case 86: // n 回合内属性（特殊）攻击对自身必定 miss
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerSpecialMissRounds = byte(subArgs[0])
+					}
+				case 91: // n 回合内双方状态变化同时影响己方与对手
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerStatusMirrorRounds = byte(subArgs[0])
+					}
+				case 89: // n 回合内造成伤害时吸血 damage/divisor
+					n, div := 0, 2
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						div = subArgs[1]
+					}
+					if n > 0 {
+						battle.PlayerLifestealRounds = byte(n)
+						battle.PlayerLifestealDivisor = byte(div)
+					}
+				case 90: // n 回合己方攻击伤害 m 倍（同 53）
+					n, mult := 0, 2
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						mult = subArgs[1]
+					}
+					if n > 0 {
+						battle.PlayerDamageMultRounds = byte(n)
+						battle.PlayerDamageMult = byte(mult)
+					}
+				case 92: // n 回合内受到物理攻击时 m% 几率将对手冻伤
+					n, chance := 0, 50
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						chance = subArgs[1]
+					}
+					if n > 0 {
+						battle.PlayerFreezeOnPhysHitRounds = byte(n)
+						if chance > 100 {
+							chance = 100
+						}
+						battle.PlayerFreezeOnPhysHitChance = byte(chance)
+					}
+				case 127: // n% 概率 m 回合内受到伤害减半
+					chance, rounds := 50, 3
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						chance = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						rounds = subArgs[1]
+					}
+					if chance > 100 {
+						chance = 100
+					}
+					if rand.Intn(100) < chance && rounds > 0 {
+						battle.PlayerDamageHalfRounds = byte(rounds)
+					}
+				case 144: // 消耗全部体力，下一只 n 回合免疫异常（HP 已在 ApplyEffect 归零）
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerSacrificeImmuneStatusRounds = byte(subArgs[0])
+					}
+				case 146: // n 回合内受物理攻击时 m% 使对方中毒
+					n, m := 0, 50
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						m = subArgs[1]
+					}
+					if m > 100 {
+						m = 100
+					}
+					if n > 0 {
+						battle.PlayerPoisonOnPhysHitRounds = byte(n)
+						battle.PlayerPoisonOnPhysHitChance = byte(m)
+					}
+				case 150: // n 回合内对手每回合防、特防等级 m
+					n, m := 0, 1
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 {
+						m = subArgs[1]
+					}
+					if n > 0 {
+						battle.EnemyDefSpDefRounds = byte(n)
+						if m < -6 {
+							m = -6
+						}
+						if m > 6 {
+							m = 6
+						}
+						battle.EnemyDefSpDefStages = int8(m)
+					}
+				case 98: // n 回合内对雄性精灵的伤害为 m 倍
+					n, mult := 0, 2
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						mult = subArgs[1]
+					}
+					if n > 0 {
+						battle.PlayerMaleDamageMultRounds = byte(n)
+						battle.PlayerMaleDamageMult = byte(mult)
+					}
+				case 104: // n 回合内每次直接攻击 m% 几率附带衰弱
+					n, chance := 0, 50
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						chance = subArgs[1]
+					}
+					if n > 0 {
+						battle.PlayerWeaknessOnHitRounds = byte(n)
+						if chance > 100 {
+							chance = 100
+						}
+						battle.PlayerWeaknessOnHitChance = byte(chance)
+					}
+				case 106: // n 回合内属性（特殊）攻击对自身必定 miss（同 86）
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerSpecialMissRounds = byte(subArgs[0])
+					}
+				case 107: // 伤害小于 n 则自身 stat 等级+1（每击判定，无回合状态）
+					// 参数在伤害应用时从技能读取，此处仅占位保证多效果解析不越界
+				case 108: // n 回合内受到物理攻击时 m% 几率将对手烧伤
+					n, chance := 0, 50
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						chance = subArgs[1]
+					}
+					if n > 0 {
+						battle.PlayerBurnOnPhysHitRounds = byte(n)
+						if chance > 100 {
+							chance = 100
+						}
+						battle.PlayerBurnOnPhysHitChance = byte(chance)
+					}
+				case 109: // n 回合内造成伤害时 m% 几率令对手冻伤
+					n, chance := 0, 50
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						chance = subArgs[1]
+					}
+					if n > 0 {
+						battle.PlayerFreezeOnDealDamageRounds = byte(n)
+						if chance > 100 {
+							chance = 100
+						}
+						battle.PlayerFreezeOnDealDamageChance = byte(chance)
+					}
+				case 1635: // 誓言之约：k 回合后恢复全部体力
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						battle.PlayerDelayedFullHealRounds = byte(subArgs[1])
+					}
+				// BOSS/特殊多效果：仅消费参数，不修改战斗状态；后续可按配置扩展
+				case 691, 700, 1083, 1248, 1257, 1605, 1850, 1925, 2236, 2237:
+					// 单参或已由 effectArgCount 切分的 subArgs，此处仅占位
+				case 773, 935:
+					// 简/极 无独立参数（0 参）
+				case 976:
+					// 简/极 第二参（如 28），可扩展为当回合固定伤害等
+				case 1211:
+					// 希 双参（如 100 300）
+				case 1470:
+					// 简/极 首参（如 1）
+				case 1603:
+					// 谄诳/红莲等 两参（如 100 1）
+				case 439: // 若自身处于能力下降或异常则对手每回合受到 m 点固定伤害
+					nR, dmg := 5, 200
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						nR = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						dmg = subArgs[1]
+					}
+					if nR > 10 {
+						nR = 10
+					}
+					battle.PlayerDealFixedDotWhenWeakRounds = byte(nR)
+					battle.PlayerDealFixedDotWhenWeakDamage = uint32(dmg)
+				case 448: // n 回合内每回合对手全能力降低 stages 级
+					nR, stages := 2, -1
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						nR = subArgs[0]
+					}
+					if len(subArgs) >= 2 {
+						stages = subArgs[1]
+						if stages == 0 {
+							stages = -1
+						}
+					}
+					if stages > 0 {
+						stages = -stages
+					}
+					if stages < -6 {
+						stages = -6
+					}
+					if nR > 10 {
+						nR = 10
+					}
+					battle.EnemyAllStatDropRounds = byte(nR)
+					battle.EnemyAllStatDropStages = int8(stages)
+				case 478: // n 回合内令对手使用的属性技能无效
+					nR := 2
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						nR = subArgs[0]
+					}
+					if nR > 10 {
+						nR = 10
+					}
+					battle.EnemyStatusSkillInvalidRounds = byte(nR)
+				case 545: // n 回合内若受到伤害高于 m 则对手获得效果 type
+					nR, thresh, typ := 3, 200, 1
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						nR = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						thresh = subArgs[1]
+					}
+					if len(subArgs) >= 3 {
+						typ = subArgs[2]
+					}
+					if nR > 10 {
+						nR = 10
+					}
+					battle.PlayerReflectStatusWhenHitRounds = byte(nR)
+					battle.PlayerReflectStatusWhenHitThreshold = uint32(thresh)
+					battle.PlayerReflectStatusWhenHitType = byte(typ)
+				case 87: // 恢复自身所有技能 PP 值
+					for i := 0; i < 4; i++ {
+						if battle.PlayerSkillIDs[i] != 0 {
+							if sk := skillMgr.Get(int(battle.PlayerSkillIDs[i])); sk != nil && sk.MaxPP > 0 {
+								battle.PlayerSkillPP[i] = byte(sk.MaxPP)
+							} else {
+								battle.PlayerSkillPP[i] = 35
+							}
+						}
+					}
+				case 21: // m~n 回合每回合反弹对手伤害的 1/k（多效果时用第2、3参为回合数、除数）
+					nR, k := 3, 4
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						nR = subArgs[1]
+					}
+					if len(subArgs) >= 3 && subArgs[2] > 0 {
+						k = subArgs[2]
+					}
+					if nR > 10 {
+						nR = 10
+					}
+					if k > 10 {
+						k = 10
+					}
+					battle.PlayerReflectDamageRounds = byte(nR)
+					battle.PlayerReflectDamageDivisor = byte(k)
+				case 32: // n 回合暴击率增加 1/16
+					nR := 3
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						nR = subArgs[0]
+					}
+					if nR > 10 {
+						nR = 10
+					}
+					battle.PlayerCritRateBonusRounds = byte(nR + 1)
+				case 454: // 当自身血量少于 1/n 时先制 +m
+					nDiv, mBonus := 3, 1
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						nDiv = subArgs[0]
+					}
+					if len(subArgs) >= 2 {
+						mBonus = subArgs[1]
+					}
+					if nDiv > 10 {
+						nDiv = 10
+					}
+					battle.PlayerPriorityBonusWhenLowHPRounds = 1
+					battle.PlayerPriorityBonusWhenLowHPDivisor = byte(nDiv)
+					battle.PlayerPriorityBonusWhenLowHPBonus = mBonus
+				case 482: // m% 几率先制 +n（本回合掷骰）
+					mChance, nBonus := 30, 1
+					if len(subArgs) >= 1 {
+						mChance = subArgs[0]
+					}
+					if len(subArgs) >= 2 {
+						nBonus = subArgs[1]
+					}
+					if mChance > 100 {
+						mChance = 100
+					}
+					battle.PlayerPriorityBonusChance = byte(mChance)
+					battle.PlayerPriorityBonusAmount = nBonus
+				case 488: // 对手体力小于 threshold 时伤害增加 percent%
+					thresh, percent := 400, byte(10)
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						thresh = subArgs[0]
+					}
+					if len(subArgs) >= 2 {
+						percent = byte(subArgs[1])
+					}
+					if percent > 100 {
+						percent = 100
+					}
+					battle.PlayerDamageBoostWhenEnemyLowThreshold = uint32(thresh)
+					battle.PlayerDamageBoostWhenEnemyLowPercent = percent
+				// 多效果时第二、第三效果也设置状态（41–50, 51–56, 57, 59, 62, 65, 68, 69, 71–73）
+				case 41:
+					n := 0
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						n = subArgs[1]
+					} else if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if n > 0 {
+						battle.PlayerFireResistRounds = byte(n)
+					}
+				case 42:
+					n := 0
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						n = subArgs[1]
+					} else if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if n > 0 {
+						battle.PlayerElectricBoostRounds = byte(n)
+					}
+				case 44:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerSpDefHalfRounds = byte(subArgs[0])
+					}
+				case 45:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerCopyDefRounds = byte(subArgs[0])
+					}
+				case 46:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerBlockCount = byte(subArgs[0])
+					}
+				case 47:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerImmuneStatDropRounds = byte(subArgs[0])
+					}
+				case 48:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerImmuneStatusRounds = byte(subArgs[0])
+					}
+				case 49:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerShieldPoints = uint32(subArgs[0])
+					}
+				case 50:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerPhysDefHalfRounds = byte(subArgs[0])
+					}
+				case 51:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerCopyAtkRounds = byte(subArgs[0])
+					}
+				case 52:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerEvasionRounds = byte(subArgs[0])
+					}
+				case 53:
+					n, mult := 0, 2
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						mult = subArgs[1]
+					}
+					if n > 0 {
+						battle.PlayerDamageMultRounds = byte(n)
+						battle.PlayerDamageMult = byte(mult)
+					}
+				case 54:
+					n, mult := 0, 2
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						mult = subArgs[1]
+					}
+					if n > 0 {
+						battle.PlayerDamageReductRounds = byte(n)
+						battle.PlayerDamageReduct = byte(mult)
+					}
+				case 55:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerTypeSwapRounds = byte(subArgs[0])
+					}
+				case 56:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerTypeCopyRounds = byte(subArgs[0])
+					}
+				case 57:
+					n, div := 0, 5
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 && subArgs[1] > 0 {
+						div = subArgs[1]
+					}
+					if n > 0 {
+						battle.PlayerRegenRounds = byte(n)
+						battle.PlayerRegenDivisor = byte(div)
+					}
+				case 59:
+					battle.PlayerSacrificeBuffActive = true
+					for i := 0; i < 6; i++ {
+						battle.PlayerSacrificeBuffStats[i] = 0
+					}
+					for i := 0; i+1 < len(subArgs); i += 2 {
+						stat, stages := subArgs[i], subArgs[i+1]
+						if stat >= 0 && stat < 6 && stages > 0 {
+							battle.PlayerSacrificeBuffStats[stat] = int8(stages)
+						}
+					}
+					if len(subArgs) == 0 {
+						for i := 0; i < 6; i++ {
+							battle.PlayerSacrificeBuffStats[i] = 1
+						}
+					}
+				case 62:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerDestinyBondRounds = byte(subArgs[0])
+					}
+				case 65:
+					n, mult, elemType := 0, 2, 0
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						n = subArgs[0]
+					}
+					if len(subArgs) >= 2 {
+						mult = subArgs[1]
+					}
+					if len(subArgs) >= 3 {
+						elemType = subArgs[2]
+					}
+					if n > 0 && mult > 0 {
+						battle.PlayerElemPowerRounds = byte(n)
+						battle.PlayerElemPowerMult = byte(mult)
+						battle.PlayerElemPowerType = byte(elemType)
+					}
+				case 68:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerEndureRounds = byte(subArgs[0])
+					}
+				case 69:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerPotionReverseRounds = byte(subArgs[0])
+					}
+				case 71:
+					battle.PlayerSacrificeCritActive = true
+				case 72:
+					battle.PlayerMissDeathActive = true
+				case 73:
+					if len(subArgs) >= 1 && subArgs[0] > 0 {
+						battle.PlayerFirstStrikeReflectRounds = byte(subArgs[0])
+						if !enemyFirst {
+							battle.PlayerFirstStrikeReflectActive = true
+						}
+					}
+				}
+			}
+		}
+
+		// Effect ID 39：n% 降低对手所有技能 m 点 PP 值
+		// SideEffectArg: n m（例如 "20 1" 表示 20% 几率每个技能 -1 PP）
+		if skill.EffectID == 39 && playerHit {
+			effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+			chance, ppReduction := 100, 1
+			if len(effArgs) >= 1 {
+				chance = effArgs[0]
+			}
+			if len(effArgs) >= 2 {
+				ppReduction = effArgs[1]
+			}
+			if chance < 0 {
+				chance = 0
+			}
+			if chance > 100 {
+				chance = 100
+			}
+			if ppReduction < 0 {
+				ppReduction = 0
+			}
+			if rand.Intn(100) < chance && ppReduction > 0 && !battle.EnemyPPInfinite {
+				for i := 0; i < 4; i++ {
+					if battle.EnemySkillPP[i] > 0 {
+						if int(battle.EnemySkillPP[i]) >= ppReduction {
+							battle.EnemySkillPP[i] -= byte(ppReduction)
+						} else {
+							battle.EnemySkillPP[i] = 0
+						}
+					}
+				}
+			}
+		}
+
 			// 对于“同生共死”一类基于血量差的技能，附加效果可能在普通伤害结算后再次大幅修改 enemyHP。
 			// 为了让客户端看到的 lostHP/日志中的 Damage 与真实扣血一致，
 			// 在效果应用后，用“出手前 HP - 当前 HP”重写 damage 与 damageCalc。
@@ -8704,6 +11151,298 @@ doPlayerTurn:
 					// 未造成额外伤害时，视为 0（例如敌方 HP <= 我方 HP）
 					damage = 0
 					damageCalc = 0
+				}
+			}
+		}
+
+		// 多回合 BUFF/护盾（41 火抗 42 电伤×2 44 特防减半 46 挡n次 47 免疫能力下降 48 免疫异常 49 吸收n点 50 物防减半）
+		if playerHit {
+			effArgs := gameskills.ParseSideEffectArg(skill.SideEffectArg)
+			n := 0
+			if len(effArgs) >= 1 {
+				n = effArgs[0]
+			}
+			if n < 0 {
+				n = 0
+			}
+			switch skill.EffectID {
+			case 41:
+				if len(effArgs) >= 2 {
+					n = effArgs[1]
+				}
+				if n > 0 {
+					battle.PlayerFireResistRounds = byte(n)
+				}
+			case 42:
+				if len(effArgs) >= 2 {
+					n = effArgs[1]
+				}
+				if n > 0 {
+					battle.PlayerElectricBoostRounds = byte(n)
+				}
+			case 44:
+				if n > 0 {
+					battle.PlayerSpDefHalfRounds = byte(n)
+				}
+			case 46:
+				if n > 0 {
+					battle.PlayerBlockCount = byte(n)
+				}
+			case 47:
+				if n > 0 {
+					battle.PlayerImmuneStatDropRounds = byte(n)
+				}
+			case 48:
+				if n > 0 {
+					battle.PlayerImmuneStatusRounds = byte(n)
+				}
+			case 49:
+				if n > 0 {
+					battle.PlayerShieldPoints = uint32(n)
+				}
+			case 50:
+				if n > 0 {
+					battle.PlayerPhysDefHalfRounds = byte(n)
+				}
+			case 32: // n 回合暴击率增加 1/16（与多效果 case 32 一致）
+				if n > 0 {
+					if n > 10 {
+						n = 10
+					}
+					battle.PlayerCritRateBonusRounds = byte(n + 1)
+				}
+			case 45: // 防御同对手
+				if n > 0 {
+					battle.PlayerCopyDefRounds = byte(n)
+				}
+			case 51: // 攻击同对手
+				if n > 0 {
+					battle.PlayerCopyAtkRounds = byte(n)
+				}
+			case 57: // n 回合每回合恢复 maxHP/m
+				div := 5
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					div = effArgs[1]
+				}
+				if n > 0 {
+					battle.PlayerRegenRounds = byte(n)
+					battle.PlayerRegenDivisor = byte(div)
+				}
+			case 65: // n 回合内某属性技能威力 m 倍，SideEffectArg: n m elemType
+				mult, elemType := 2, 0
+				if len(effArgs) >= 2 {
+					mult = effArgs[1]
+				}
+				if len(effArgs) >= 3 {
+					elemType = effArgs[2]
+				}
+				if n > 0 && mult > 0 {
+					battle.PlayerElemPowerRounds = byte(n)
+					battle.PlayerElemPowerMult = byte(mult)
+					battle.PlayerElemPowerType = byte(elemType)
+				}
+			case 68: // 1 回合内致死留 1 血
+				if n > 0 {
+					battle.PlayerEndureRounds = byte(n)
+				}
+			case 52: // n 回合本方先手时对方技能 miss
+				if n > 0 {
+					battle.PlayerEvasionRounds = byte(n)
+				}
+			case 53: // n 回合己方攻击伤害 m 倍，Arg: n m
+				mult := 2
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					mult = effArgs[1]
+				}
+				if n > 0 {
+					battle.PlayerDamageMultRounds = byte(n)
+					battle.PlayerDamageMult = byte(mult)
+				}
+			case 54: // n 回合对方打我方伤害 1/m
+				mult := 2
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					mult = effArgs[1]
+				}
+				if n > 0 {
+					battle.PlayerDamageReductRounds = byte(n)
+					battle.PlayerDamageReduct = byte(mult)
+				}
+			case 55: // n 回合属性反转
+				if n > 0 {
+					battle.PlayerTypeSwapRounds = byte(n)
+				}
+			case 56: // n 回合属性与对方相同
+				if n > 0 {
+					battle.PlayerTypeCopyRounds = byte(n)
+				}
+			case 91: // n 回合内双方状态变化同时影响己方与对手（能力/异常镜像）
+				if n > 0 {
+					battle.PlayerStatusMirrorRounds = byte(n)
+				}
+			case 62: // n 回合后若己方存活则对方死亡（镇魂歌）
+				if n > 0 {
+					battle.PlayerDestinyBondRounds = byte(n)
+				}
+			case 59: // 牺牲强化下一只：当前精灵被击败时，下一只上场的精灵获得能力强化
+				// SideEffectArg: stat1 stages1 stat2 stages2 ... (例如 "0 2 2 1" 表示攻击+2级、特攻+1级)
+				// 如果没有参数，默认全能力+1级
+				battle.PlayerSacrificeBuffActive = true
+				// 清空之前的强化记录
+				for i := 0; i < 6; i++ {
+					battle.PlayerSacrificeBuffStats[i] = 0
+				}
+				if len(effArgs) >= 2 {
+					// 解析参数：stat stages 对
+					for i := 0; i+1 < len(effArgs); i += 2 {
+						stat := effArgs[i]
+						stages := effArgs[i+1]
+						if stat >= 0 && stat < 6 && stages > 0 {
+							battle.PlayerSacrificeBuffStats[stat] = int8(stages)
+						}
+					}
+				} else {
+					// 默认全能力+1级
+					for i := 0; i < 6; i++ {
+						battle.PlayerSacrificeBuffStats[i] = 1
+					}
+				}
+			case 69: // 药剂反噬：下n回合对手使用体力药剂时效果变成减少相应的体力
+				if n > 0 {
+					battle.PlayerPotionReverseRounds = byte(n)
+				}
+			case 71: // 牺牲暴击：自己牺牲(体力降到0), 使下一只出战精灵在前两回合内必定致命一击
+				battle.PlayerSacrificeCritActive = true
+			case 72: // Miss死亡：如果此回合miss，则立即死亡
+				battle.PlayerMissDeathActive = true
+			case 73: // 先手反弹：如果先出手，则受攻击时反弹200%的伤害给对手，持续n回合
+				if n > 0 {
+					battle.PlayerFirstStrikeReflectRounds = byte(n)
+					// 检查本回合是否先手：如果玩家先手（!enemyFirst），则激活
+					if !enemyFirst {
+						battle.PlayerFirstStrikeReflectActive = true
+					}
+				}
+			case 116: // n 回合内每次受到攻击造成伤害的 1/5 恢复自身体力
+				if n > 0 {
+					battle.PlayerDefendHealRounds = byte(n)
+				}
+			case 117: // n 回合内每次受到攻击 m% 概率使对手疲惫 1~3 回合
+				chance := 30
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					chance = effArgs[1]
+				}
+				if n > 0 {
+					battle.PlayerDefendFatigueRounds = byte(n)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.PlayerDefendFatigueChance = byte(chance)
+				}
+			case 123: // n 回合内受到任何伤害时自身 XX 提高 m 级；SideEffectArg: n stat stages
+				rounds, stat, stages := 0, 0, 1
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					stat = effArgs[1]
+				}
+				if len(effArgs) >= 3 && effArgs[2] > 0 {
+					stages = effArgs[2]
+				}
+				if rounds > 0 && stat >= 0 && stat < 6 {
+					battle.PlayerHurtStatBoostRounds = byte(rounds)
+					battle.PlayerHurtStatBoostStat = byte(stat)
+					battle.PlayerHurtStatBoostStages = int8(stages)
+				}
+			case 125: // n 回合内被攻击时减少受到的伤害上限 m
+				cap := 0
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					cap = effArgs[1]
+				}
+				if n > 0 && cap > 0 {
+					battle.PlayerDamageCapRounds = byte(n)
+					battle.PlayerDamageCap = uint32(cap)
+				}
+			case 126: // n 回合内每回合自身攻击和速度 +m 级
+				stages := 1
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					stages = effArgs[1]
+				}
+				if n > 0 {
+					battle.PlayerSpeedBoostRounds = byte(n)
+					battle.PlayerSpeedBoostStages = int8(stages)
+				}
+			case 128: // n 回合内接受的物理伤害转化为体力恢复
+				if n > 0 {
+					battle.PlayerPhysDmgToHealRounds = byte(n)
+				}
+			case 471: // 先出手时 n 回合内免疫异常状态
+				if n > 0 && !enemyFirst {
+					battle.PlayerImmuneStatusRounds = byte(n)
+				}
+			case 110: // n 回合内每次受到攻击时 m% 几率使对手 stat 等级 -1
+				chance, stat := 50, 0
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					chance = effArgs[1]
+				}
+				if len(effArgs) >= 3 {
+					stat = effArgs[2]
+				}
+				if n > 0 {
+					battle.PlayerDefendStatDropRounds = byte(n)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.PlayerDefendStatDropChance = byte(chance)
+					if stat < 0 || stat > 5 {
+						stat = 0
+					}
+					battle.PlayerDefendStatDropStat = byte(stat)
+				}
+			case 127: // n% 概率 m 回合内受到伤害减半
+				chance127, rounds127 := 50, 3
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					chance127 = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					rounds127 = effArgs[1]
+				}
+				if chance127 > 100 {
+					chance127 = 100
+				}
+				if rand.Intn(100) < chance127 && rounds127 > 0 {
+					battle.PlayerDamageHalfRounds = byte(rounds127)
+				}
+			case 144: // 消耗全部体力，下一只 n 回合免疫异常（HP 已在 ApplyEffect 归零）
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					battle.PlayerSacrificeImmuneStatusRounds = byte(effArgs[0])
+				}
+			case 146: // n 回合内受物理攻击时 m% 使对方中毒
+				m146 := 50
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					m146 = effArgs[1]
+				}
+				if m146 > 100 {
+					m146 = 100
+				}
+				if n > 0 {
+					battle.PlayerPoisonOnPhysHitRounds = byte(n)
+					battle.PlayerPoisonOnPhysHitChance = byte(m146)
+				}
+			case 150: // n 回合内对手每回合防、特防等级 m
+				m150 := 1
+				if len(effArgs) >= 2 {
+					m150 = effArgs[1]
+				}
+				if n > 0 {
+					battle.EnemyDefSpDefRounds = byte(n)
+					if m150 < -6 {
+						m150 = -6
+					}
+					if m150 > 6 {
+						m150 = 6
+					}
+					battle.EnemyDefSpDefStages = int8(m150)
 				}
 			}
 		}
@@ -8911,6 +11650,18 @@ runEnemyTurnFirst:
 			enemyParalyzed = true
 			battle.EnemyStatus[gameskills.StatusIndexParalysis]--
 		}
+		// 敌方石化（status[9]）：本回合无法行动，并递减回合数
+		enemyPetrified := false
+		if battle.EnemyStatus[gameskills.StatusIndexPetrify] > 0 {
+			enemyPetrified = true
+			battle.EnemyStatus[gameskills.StatusIndexPetrify]--
+		}
+		// 敌方混乱（status[10]）：简化为“本回合无法行动”，并递减回合数
+		enemyConfused := false
+		if battle.EnemyStatus[gameskills.StatusIndexConfusion] > 0 {
+			enemyConfused = true
+			battle.EnemyStatus[gameskills.StatusIndexConfusion]--
+		}
 
 		// 敌人反击（如果敌人还活着且未畏缩、未因麻痹无法行动）
 		enemyDamage = 0
@@ -8918,10 +11669,31 @@ runEnemyTurnFirst:
 		enemySkillID = 0
 		enemyAttempted = false
 		enemyHitFor2505 = false
-		if battle.EnemyHP > 0 && !enemyFlinched && !enemyParalyzed {
+		if battle.EnemyHP > 0 && !enemyFlinched && !enemyParalyzed && !enemyPetrified && !enemyConfused {
 		if enemySkillForTurn != nil && enemySkillIDForTurn != 0 {
 			enemySkillID = enemySkillIDForTurn
 			enemyAttempted = true
+
+			// 敌方 PP 消耗与耗尽判定（支持 Effect 39 导致本回合无法行动）
+			if !battle.EnemyPPInfinite {
+				idxPP := -1
+				for i := 0; i < 4; i++ {
+					if battle.EnemySkillIDs[i] == enemySkillIDForTurn {
+						idxPP = i
+						break
+					}
+				}
+				if idxPP >= 0 {
+					if battle.EnemySkillPP[idxPP] == 0 {
+						// 敌方当前选择的技能 PP 已为 0：本回合无法出招
+						enemySkillID = 0
+						enemyAttempted = false
+						enemyHitFor2505 = false
+						return
+					}
+					battle.EnemySkillPP[idxPP]--
+				}
+			}
 
 			// 魔狮迪露(187) 体力低于一半时：任意技能（属性/攻击）必定秒杀我方当前精灵
 			moShiDiLuOneShot := sptboss.IsHalfHPOneShotBoss(battle.EnemyID) && battle.EnemyMaxHP > 0 && battle.EnemyHP*2 < battle.EnemyMaxHP
@@ -8953,6 +11725,23 @@ runEnemyTurnFirst:
 					enemyHit = false
 				}
 			}
+			// 52：本方先手时对方技能 miss（我方有 52 且敌方先手则敌方 miss）
+			if enemyHit && enemyFirst && battle.PlayerEvasionRounds > 0 && enemySkillForTurn.MustHit != 1 {
+				enemyHit = false
+			}
+			// 78（我方）：n 回合内物理攻击对自身必定 miss
+			if enemyHit && enemySkillForTurn.Category == 1 && battle.PlayerPhysMissRounds > 0 && enemySkillForTurn.MustHit != 1 {
+				enemyHit = false
+			}
+			// 86（我方）：n 回合内属性（特殊）攻击对自身必定 miss
+			if enemyHit && enemySkillForTurn.Category == 2 && battle.PlayerSpecialMissRounds > 0 && enemySkillForTurn.MustHit != 1 {
+				enemyHit = false
+			}
+			// 72 - Miss死亡：如果此回合miss，则立即死亡
+			if !enemyHit && battle.EnemyMissDeathActive {
+				battle.EnemyHP = 0
+				battle.EnemyMissDeathActive = false
+			}
 			enemyHitFor2505 = enemyHit
 
 			// 敌人伤害计算（仅在命中且为攻击技能时）
@@ -8960,6 +11749,30 @@ runEnemyTurnFirst:
 			// Category=4 为纯变化/属性技能（红韵、魅惑等），不应造成直接伤害
 			if enemySkillForTurn.Category != 4 && enemyPower == 0 {
 				enemyPower = 40
+			}
+			// 1901：潜力越高威力越大（按 DV*5）。PvE 敌方 DV 统一按 15 计算（与 enemyStats 取值一致）。
+			if enemySkillForTurn.EffectID == 1901 && enemySkillForTurn.Category != 4 {
+				enemyPower = 15 * 5
+			}
+			// 61：威力随机 50~150
+			if enemySkillForTurn.EffectID == 61 && enemySkillForTurn.Category != 4 {
+				enemyPower = uint32(rand.Intn(150-50+1) + 50)
+			}
+			// 70：威力随机 140~220
+			if enemySkillForTurn.EffectID == 70 && enemySkillForTurn.Category != 4 {
+				enemyPower = uint32(rand.Intn(220-140+1) + 140)
+			}
+			// 40：先出手时威力为 2 倍（仅当敌方本回合先手）
+			if enemySkillForTurn.EffectID == 40 && enemySkillForTurn.Category != 4 && enemyFirst {
+				enemyPower *= 2
+			}
+			// 118：威力随机 140~180
+			if enemySkillForTurn.EffectID == 118 && enemySkillForTurn.Category != 4 {
+				enemyPower = uint32(rand.Intn(180-140+1) + 140)
+			}
+			// 65：敌方某属性技能威力 m 倍
+			if battle.EnemyElemPowerRounds > 0 && enemySkillForTurn.Type == int(battle.EnemyElemPowerType) {
+				enemyPower *= uint32(battle.EnemyElemPowerMult)
 			}
 			// 敌方攻防（按技能类别），并应用强化弱化倍率
 			enemyAtk := float64(enemyStats.Attack)
@@ -8969,6 +11782,22 @@ runEnemyTurnFirst:
 				enemyAtk = float64(enemyStats.SpAtk)
 				enemyDef = float64(playerStats.SpDef)
 				enemyAtkStage, enemyDefStage = 2, 3 // 特殊：特攻/特防
+			}
+			// 51：敌方攻击力与己方相同
+			if battle.EnemyCopyAtkRounds > 0 {
+				if enemySkillForTurn.Category == 2 {
+					enemyAtk = float64(playerStats.SpAtk)
+				} else {
+					enemyAtk = float64(playerStats.Attack)
+				}
+			}
+			// 45：我方防御力与对手相同（即我方防御=敌方防御）
+			if battle.PlayerCopyDefRounds > 0 {
+				if enemySkillForTurn.Category == 2 {
+					enemyDef = float64(enemyStats.SpDef)
+				} else {
+					enemyDef = float64(enemyStats.Defence)
+				}
 			}
 			enemyAtk *= gamebattle.GetStatMultiplier(int(battle.EnemyBattleLv[enemyAtkStage]))
 			enemyDef *= gamebattle.GetStatMultiplier(int(battle.PlayerBattleLv[enemyDefStage]))
@@ -8980,6 +11809,7 @@ runEnemyTurnFirst:
 				enemyBaseDamage = math.Floor(((float64(battle.EnemyLevel)*0.4 + 2.0) * float64(enemyPower) * enemyAtk / enemyDef / 50.0) + 2.0)
 			}
 			enemyFinalDamage := uint32(0)
+			isCritEnemy := false
 			if enemyHit && enemySkillForTurn.Category != 4 && enemyBaseDamage > 0 {
 				enemyStab := 1.0
 				if enemyPet != nil && (enemySkillForTurn.Type == enemyPet.Type || (enemyPet.Type2 > 0 && enemySkillForTurn.Type == enemyPet.Type2)) {
@@ -8987,7 +11817,15 @@ runEnemyTurnFirst:
 				}
 				enemyTypeMod := 1.0
 				if attackerPet != nil {
-					enemyTypeMod = gamebattle.GetTypeMultiplierDual(enemySkillForTurn.Type, attackerPet.Type, attackerPet.Type2)
+					if battle.PlayerTypeSwapRounds > 0 {
+						// 55：属性反转（我方有 55，敌方攻击我方时）
+						enemyTypeMod = gamebattle.GetTypeMultiplierDual(attackerPet.Type, attackerPet.Type2, enemySkillForTurn.Type)
+					} else if battle.PlayerTypeCopyRounds > 0 {
+						// 56：属性相同
+						enemyTypeMod = 1.0
+					} else {
+						enemyTypeMod = gamebattle.GetTypeMultiplierDual(enemySkillForTurn.Type, attackerPet.Type, attackerPet.Type2)
+					}
 				}
 				enemyRandomMod := float64(rand.Intn(255-217+1)+217) / 255.0
 				// 敌人暴击：1/16 基础概率
@@ -8999,9 +11837,37 @@ runEnemyTurnFirst:
 				if battle.EnemyCritBuffRounds > 0 {
 					enemyCritRate = 16
 				}
+				// 32（敌方）- n 回合暴击率增加 1/16
+				if battle.EnemyCritRateBonusRounds > 0 && enemyCritRate < 16 {
+					enemyCritRate++
+				}
+				// 441（敌方）- 每次攻击暴击率 +n%（累积，最高 m%）
+				if battle.EnemyCritRateBonus > 0 {
+					enemyCritRate += int(battle.EnemyCritRateBonus)
+					if enemyCritRate > 16 {
+						enemyCritRate = 16
+					}
+				}
+				// 83（敌方雌性）- 下两回合必定暴击
+				if battle.EnemyFemaleCritRounds > 0 {
+					enemyCritRate = 16
+				}
+				// 95（敌方）- 对手处于睡眠状态时致命一击率提升 n/16
+				if enemySkillForTurn.EffectID == 95 && battle.PlayerStatus[gameskills.StatusIndexSleep] > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					bonus := 4
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						bonus = effArgs[0]
+					}
+					enemyCritRate += bonus
+					if enemyCritRate > 16 {
+						enemyCritRate = 16
+					}
+				}
 				enemyCritMod := 1.0
 				if rand.Intn(16) < enemyCritRate {
 					// 暴击：伤害为正常攻击伤害的两倍
+					isCritEnemy = true
 					enemyCritMod = 2.0
 					// 敌方暴击时，同样清除我方防御/特防的强化状态
 					if enemySkillForTurn.Category == 1 {
@@ -9017,9 +11883,38 @@ runEnemyTurnFirst:
 					}
 				}
 				enemyFinalDamage = uint32(enemyBaseDamage * enemyStab * enemyTypeMod * enemyRandomMod * enemyCritMod)
+				// 53：敌方攻击伤害 m 倍
+				if battle.EnemyDamageMultRounds > 0 && battle.EnemyDamageMult > 0 {
+					enemyFinalDamage *= uint32(battle.EnemyDamageMult)
+				}
 				// 盖亚(261) 伤害翻倍，能力提升仍与其他 BOSS 一致（仅攻击+2）
 				if battle.EnemyID == petIDGaiya && enemyFinalDamage > 0 {
 					enemyFinalDamage *= 2
+				}
+			}
+			// effect 88：n% 几率伤害为 m 倍
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 88 {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				chance, mult := 10, 2
+				if len(effArgs) >= 1 {
+					chance = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					mult = effArgs[1]
+				}
+				if chance < 0 {
+					chance = 0
+				}
+				if mult < 1 {
+					mult = 1
+				}
+				if rand.Intn(100) < chance {
+					mul := uint64(enemyFinalDamage) * uint64(mult)
+					if mul > math.MaxUint32 {
+						enemyFinalDamage = math.MaxUint32
+					} else {
+						enemyFinalDamage = uint32(mul)
+					}
 				}
 			}
 			// 敌人多段攻击（effect 31），同样折算为单次伤害倍数
@@ -9048,18 +11943,451 @@ runEnemyTurnFirst:
 					}
 				}
 			}
-			// 烧伤效果：被烧伤方（敌人）造成的伤害减半
-			if enemyFinalDamage > 0 && battle.EnemyStatus[gameskills.StatusIndexBurn] > 0 {
+			// effect 64：自身在烧伤/冻伤/中毒状态下造成的伤害加倍（并视为覆盖烧伤减伤）
+			enemyHasAilment := battle.EnemyStatus[gameskills.StatusIndexPoison] > 0 ||
+				battle.EnemyStatus[gameskills.StatusIndexBurn] > 0 ||
+				battle.EnemyStatus[gameskills.StatusIndexFreeze] > 0
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 64 && enemyHasAilment {
+				mul := uint64(enemyFinalDamage) * 2
+				if mul > math.MaxUint32 {
+					enemyFinalDamage = math.MaxUint32
+				} else {
+					enemyFinalDamage = uint32(mul)
+				}
+			} else if enemyFinalDamage > 0 && battle.EnemyStatus[gameskills.StatusIndexBurn] > 0 {
+				// 烧伤效果：被烧伤方（敌人）造成的伤害减半
 				enemyFinalDamage = enemyFinalDamage / 2
 				if enemyFinalDamage < 1 {
 					enemyFinalDamage = 1
 				}
 			}
+			// effect 82（敌方）：目标为雄性伤害 200%，雌性 50%
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 82 {
+				targetPet := petMgr.Get(playerPetID)
+				if targetPet != nil {
+					if targetPet.Gender == 1 {
+						enemyFinalDamage *= 2
+						if enemyFinalDamage > battle.PlayerHP {
+							enemyFinalDamage = battle.PlayerHP
+						}
+					} else if targetPet.Gender == 2 {
+						enemyFinalDamage /= 2
+						if enemyFinalDamage < 1 {
+							enemyFinalDamage = 1
+						}
+					}
+				}
+			}
+			// 96（敌方）- 对手处于烧伤状态时威力翻倍
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 96 && battle.PlayerStatus[gameskills.StatusIndexBurn] > 0 {
+				mul := uint64(enemyFinalDamage) * 2
+				if mul > math.MaxUint32 {
+					enemyFinalDamage = math.MaxUint32
+				} else {
+					enemyFinalDamage = uint32(mul)
+				}
+				if enemyFinalDamage > battle.PlayerHP {
+					enemyFinalDamage = battle.PlayerHP
+				}
+			}
+			// 97（敌方）- 对手处于冻伤状态时威力翻倍
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 97 && battle.PlayerStatus[gameskills.StatusIndexFreeze] > 0 {
+				mul := uint64(enemyFinalDamage) * 2
+				if mul > math.MaxUint32 {
+					enemyFinalDamage = math.MaxUint32
+				} else {
+					enemyFinalDamage = uint32(mul)
+				}
+				if enemyFinalDamage > battle.PlayerHP {
+					enemyFinalDamage = battle.PlayerHP
+				}
+			}
+			// 102（敌方）- 对手处于麻痹状态时威力翻倍
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 102 && battle.PlayerStatus[gameskills.StatusIndexParalysis] > 0 {
+				mul := uint64(enemyFinalDamage) * 2
+				if mul > math.MaxUint32 {
+					enemyFinalDamage = math.MaxUint32
+				} else {
+					enemyFinalDamage = uint32(mul)
+				}
+				if enemyFinalDamage > battle.PlayerHP {
+					enemyFinalDamage = battle.PlayerHP
+				}
+			}
+			// 98（敌方）- n 回合内对雄性精灵的伤害为 m 倍
+			if enemyFinalDamage > 0 && battle.EnemyMaleDamageMultRounds > 0 {
+				targetPet := petMgr.Get(playerPetID)
+				if targetPet != nil && targetPet.Gender == 1 {
+					mult := battle.EnemyMaleDamageMult
+					if mult < 1 {
+						mult = 1
+					}
+					mul := uint64(enemyFinalDamage) * uint64(mult)
+					if mul > math.MaxUint32 {
+						enemyFinalDamage = math.MaxUint32
+					} else {
+						enemyFinalDamage = uint32(mul)
+					}
+					if enemyFinalDamage > battle.PlayerHP {
+						enemyFinalDamage = battle.PlayerHP
+					}
+				}
+			}
+			// 100（敌方）- 自身体力越少则威力越大
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 100 && battle.EnemyMaxHP > 0 {
+				ratio := 2.0 - float64(battle.EnemyHP)/float64(battle.EnemyMaxHP)
+				if ratio < 1.0 {
+					ratio = 1.0
+				}
+				if ratio > 2.0 {
+					ratio = 2.0
+				}
+				mul := uint64(float64(enemyFinalDamage) * ratio)
+				if mul > math.MaxUint32 {
+					enemyFinalDamage = math.MaxUint32
+				} else {
+					enemyFinalDamage = uint32(mul)
+				}
+				if enemyFinalDamage > battle.PlayerHP {
+					enemyFinalDamage = battle.PlayerHP
+				}
+			}
 			if enemyFinalDamage < 1 {
 				enemyFinalDamage = 0
 			}
+			// 179（敌方）- 若属性相同则技能威力提升 n
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 179 {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				boost := 20
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					boost = effArgs[0]
+				}
+				enemyPet := petMgr.Get(battle.EnemyID)
+				targetPet := petMgr.Get(playerPetID)
+				if enemyPet != nil && targetPet != nil && enemyPet.Type == targetPet.Type {
+					enemyFinalDamage = enemyFinalDamage * uint32(100+boost) / 100
+				}
+			}
+			// 129（敌方）- 对方为 X 性则技能威力翻倍
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 129 {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				gender := 2
+				if len(effArgs) >= 1 {
+					gender = effArgs[0]
+				}
+				targetPet := petMgr.Get(playerPetID)
+				if targetPet != nil && targetPet.Gender == gender {
+					mul := uint64(enemyFinalDamage) * 2
+					if mul > math.MaxUint32 {
+						enemyFinalDamage = math.MaxUint32
+					} else {
+						enemyFinalDamage = uint32(mul)
+					}
+				}
+			}
+			// 130（敌方）- 对方为 X 性则附加 n 点伤害
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 130 {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				gender, bonus := 1, 100
+				if len(effArgs) >= 1 {
+					gender = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					bonus = effArgs[1]
+				}
+				targetPet := petMgr.Get(playerPetID)
+				if targetPet != nil && targetPet.Gender == gender {
+					enemyFinalDamage += uint32(bonus)
+				}
+			}
+			// 131（敌方）- 对方为 X 性则免疫当前回合伤害
+			if enemySkillForTurn.EffectID == 131 {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				gender := 1
+				if len(effArgs) >= 1 {
+					gender = effArgs[0]
+				}
+				targetPet := petMgr.Get(playerPetID)
+				if targetPet != nil && targetPet.Gender == gender {
+					enemyFinalDamage = 0
+					enemyDamageCalc = 0
+				}
+			}
+			// 135/447（敌方）- 造成的伤害不会低于 n
+			if (enemySkillForTurn.EffectID == 135 || enemySkillForTurn.EffectID == 447) && enemyFinalDamage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				floor := 80
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					floor = effArgs[0]
+				}
+				if enemyFinalDamage < uint32(floor) {
+					enemyFinalDamage = uint32(floor)
+				}
+			}
+			// 193（敌方）- 若对手处于 XX 状态则必定致命一击
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 193 && !isCritEnemy {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				statusIdx := 5
+				if len(effArgs) >= 1 {
+					statusIdx = effArgs[0]
+				}
+				if statusIdx >= 0 && statusIdx < 20 && battle.PlayerStatus[statusIdx] > 0 {
+					isCritEnemy = true
+					mul := uint64(enemyFinalDamage) * 2
+					if mul > math.MaxUint32 {
+						enemyFinalDamage = math.MaxUint32
+					} else {
+						enemyFinalDamage = uint32(mul)
+					}
+				}
+			}
+			// 468（敌方）- 若自身处于能力下降状态则威力翻倍，同时解除能力下降状态
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 468 {
+				hasStatDrop := false
+				for i := 0; i < 6; i++ {
+					if battle.EnemyBattleLv[i] < 0 {
+						hasStatDrop = true
+						break
+					}
+				}
+				if hasStatDrop {
+					mul := uint64(enemyFinalDamage) * 2
+					if mul > math.MaxUint32 {
+						enemyFinalDamage = math.MaxUint32
+					} else {
+						enemyFinalDamage = uint32(mul)
+					}
+					for i := 0; i < 6; i++ {
+						if battle.EnemyBattleLv[i] < 0 {
+							battle.EnemyBattleLv[i] = 0
+						}
+					}
+				}
+			}
+			// 195（敌方）- 若对手处于异常状态则攻击力双倍
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 195 {
+				hasStatus := false
+				for i := 0; i < 20; i++ {
+					if battle.PlayerStatus[i] > 0 {
+						hasStatus = true
+						break
+					}
+				}
+				if hasStatus {
+					mul := uint64(enemyFinalDamage) * 2
+					if mul > math.MaxUint32 {
+						enemyFinalDamage = math.MaxUint32
+					} else {
+						enemyFinalDamage = uint32(mul)
+					}
+				}
+			}
+			// 180（敌方）- 只在第一回合有效果
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 180 && battle.RoundCount > 1 {
+				enemyFinalDamage /= 2
+				if enemyFinalDamage < 1 {
+					enemyFinalDamage = 1
+				}
+			}
+			// 88（敌方）- n% 概率伤害为 m 倍
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 88 {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				chance, mult := 10, 2
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					chance = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					mult = effArgs[1]
+				}
+				if rand.Intn(100) < chance {
+					mul := uint64(enemyFinalDamage) * uint64(mult)
+					if mul > math.MaxUint32 {
+						enemyFinalDamage = math.MaxUint32
+					} else {
+						enemyFinalDamage = uint32(mul)
+					}
+				}
+			}
+			// 35（敌方）- 对方能力等级越高伤害越大
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 35 {
+				totalBoost := 0
+				for i := 0; i < 6; i++ {
+					if battle.PlayerBattleLv[i] > 0 {
+						totalBoost += int(battle.PlayerBattleLv[i])
+					}
+				}
+				if totalBoost > 0 {
+					mul := uint64(enemyFinalDamage) * uint64(100+totalBoost*5) / 100
+					if mul > math.MaxUint32 {
+						enemyFinalDamage = math.MaxUint32
+					} else {
+						enemyFinalDamage = uint32(mul)
+					}
+				}
+			}
+			// 111（敌方）- 攻击力越高附加伤害越大
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 111 {
+				enemyPet := petMgr.Get(battle.EnemyID)
+				targetPet := petMgr.Get(playerPetID)
+				if enemyPet != nil && targetPet != nil && enemyPet.Atk > targetPet.Atk {
+					bonus := uint32(enemyPet.Atk-targetPet.Atk) / 10
+					enemyFinalDamage += bonus
+				}
+			}
+			// 113（敌方）- 速度越高威力越大
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 113 {
+				enemyPet := petMgr.Get(battle.EnemyID)
+				targetPet := petMgr.Get(playerPetID)
+				if enemyPet != nil && targetPet != nil && enemyPet.Spd > targetPet.Spd {
+					bonus := uint32(enemyPet.Spd-targetPet.Spd) / 10
+					enemyFinalDamage += bonus
+				}
+			}
+			// 132（敌方）- 当前体力在对方体力以上时威力翻倍
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 132 && battle.EnemyHP >= battle.PlayerHP {
+				mul := uint64(enemyFinalDamage) * 2
+				if mul > math.MaxUint32 {
+					enemyFinalDamage = math.MaxUint32
+				} else {
+					enemyFinalDamage = uint32(mul)
+				}
+			}
+			// 168（敌方）- 若自身处于睡眠状态则威力翻倍
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 168 && battle.EnemyStatus[gameskills.StatusIndexSleep] > 0 {
+				mul := uint64(enemyFinalDamage) * 2
+				if mul > math.MaxUint32 {
+					enemyFinalDamage = math.MaxUint32
+				} else {
+					enemyFinalDamage = uint32(mul)
+				}
+			}
+			// 429（敌方）- 固定伤递增
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 429 {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				base, increment, maxDmg := 25, 25, 100
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					base = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					increment = effArgs[1]
+				}
+				if len(effArgs) >= 3 && effArgs[2] > 0 {
+					maxDmg = effArgs[2]
+				}
+				current := uint32(base) + battle.EnemyFixedDmgIncrement
+				if current > uint32(maxDmg) {
+					current = uint32(maxDmg)
+				}
+				if current > battle.PlayerHP {
+					current = battle.PlayerHP
+				}
+				enemyFinalDamage += current
+				battle.EnemyFixedDmgIncrement += uint32(increment)
+				if battle.EnemyFixedDmgIncrement > uint32(maxDmg-base) {
+					battle.EnemyFixedDmgIncrement = uint32(maxDmg - base)
+				}
+			}
+			// 431（敌方）- 若自身处于能力下降状态则威力翻倍
+			if enemyFinalDamage > 0 && enemySkillForTurn.EffectID == 431 {
+				hasStatDrop := false
+				for i := 0; i < 6; i++ {
+					if battle.EnemyBattleLv[i] < 0 {
+						hasStatDrop = true
+						break
+					}
+				}
+				if hasStatDrop {
+					mul := uint64(enemyFinalDamage) * 2
+					if mul > math.MaxUint32 {
+						enemyFinalDamage = math.MaxUint32
+					} else {
+						enemyFinalDamage = uint32(mul)
+					}
+				}
+			}
+			// 402（敌方）- 后出手时额外附加 n 点固定伤害
+			if enemyHit && enemySkillForTurn.EffectID == 402 && !enemyFirst && enemyFinalDamage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				bonus := uint32(50)
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					bonus = uint32(effArgs[0])
+				}
+				enemyFinalDamage += bonus
+				if enemyFinalDamage > battle.PlayerHP {
+					enemyFinalDamage = battle.PlayerHP
+				}
+			}
+			// 405（敌方）- 先出手时额外附加 n 点固定伤害
+			if enemyHit && enemySkillForTurn.EffectID == 405 && enemyFirst && enemyFinalDamage > 0 {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				bonus := uint32(50)
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					bonus = uint32(effArgs[0])
+				}
+				enemyFinalDamage += bonus
+				if enemyFinalDamage > battle.PlayerHP {
+					enemyFinalDamage = battle.PlayerHP
+				}
+			}
 			// 理论伤害用于客户端显示（对方打我方时显示实际受到的伤害数字，而非仅剩余血量）
 			enemyDamageCalc = enemyFinalDamage
+			// 42：敌方电系技能伤害×2
+			if enemyHit && battle.EnemyElectricBoostRounds > 0 && enemySkillForTurn.Type == 5 && enemyFinalDamage > 0 {
+				enemyFinalDamage *= 2
+				if enemyFinalDamage > battle.PlayerHP {
+					enemyFinalDamage = battle.PlayerHP
+				}
+			}
+			if enemyHit && enemyFinalDamage > 0 {
+				// 我方防御侧：46 挡一次 54 伤害1/m 41 火抗 44 特防减半 50 物防减半 49 护盾
+				if battle.PlayerBlockCount > 0 {
+					battle.PlayerBlockCount--
+					enemyFinalDamage = 0
+				} else {
+					// 54：对方打我方伤害 1/m
+					if battle.PlayerDamageReductRounds > 0 && battle.PlayerDamageReduct > 0 {
+						enemyFinalDamage /= uint32(battle.PlayerDamageReduct)
+						if enemyFinalDamage < 1 {
+							enemyFinalDamage = 1
+						}
+					}
+					if battle.PlayerFireResistRounds > 0 && enemySkillForTurn.Type == 3 {
+						enemyFinalDamage /= 2
+						if enemyFinalDamage < 1 {
+							enemyFinalDamage = 1
+						}
+					}
+					if battle.PlayerSpDefHalfRounds > 0 && enemySkillForTurn.Category == 2 {
+						enemyFinalDamage /= 2
+						if enemyFinalDamage < 1 {
+							enemyFinalDamage = 1
+						}
+					}
+					if battle.PlayerPhysDefHalfRounds > 0 && enemySkillForTurn.Category == 1 {
+						enemyFinalDamage /= 2
+						if enemyFinalDamage < 1 {
+							enemyFinalDamage = 1
+						}
+					}
+					if battle.PlayerShieldPoints > 0 {
+						if enemyFinalDamage <= battle.PlayerShieldPoints {
+							battle.PlayerShieldPoints -= enemyFinalDamage
+							enemyFinalDamage = 0
+						} else {
+							enemyFinalDamage -= battle.PlayerShieldPoints
+							battle.PlayerShieldPoints = 0
+						}
+					}
+					if enemyFinalDamage > battle.PlayerHP {
+						enemyFinalDamage = battle.PlayerHP
+					}
+				}
+			}
+			// 68：致死留 1 血（仅一次）
+			if enemyHit && enemyFinalDamage > 0 && battle.PlayerEndureRounds > 0 && enemyFinalDamage >= battle.PlayerHP && battle.PlayerHP > 0 {
+				enemyFinalDamage = battle.PlayerHP - 1
+				battle.PlayerEndureRounds--
+			}
 			if enemyHit && enemyFinalDamage > 0 {
 				// 特性：坚硬(1024) —— 受到的伤害减少5%
 				if playerTrait == 1024 {
@@ -9079,7 +12407,666 @@ runEnemyTurnFirst:
 					enemyFinalDamage = battle.PlayerHP
 				}
 				enemyDamage = enemyFinalDamage
+				// 73 - 先手反弹：如果先出手，则受攻击时反弹200%的伤害给对手
+				if battle.PlayerFirstStrikeReflectActive && battle.PlayerFirstStrikeReflectRounds > 0 && enemyDamage > 0 {
+					reflectDamage := enemyDamage * 2
+					if reflectDamage > battle.EnemyHP {
+						reflectDamage = battle.EnemyHP
+					}
+					battle.EnemyHP -= reflectDamage
+				}
+			playerHPBeforeDamage := battle.PlayerHP
+			// 127 - n 回合内受到伤害减半
+			if battle.PlayerDamageHalfRounds > 0 && enemyDamage > 0 {
+				enemyDamage /= 2
+			}
+			// 508 - 下回合所受伤害减少 m 点（生效一次后清零）
+			if battle.PlayerNextTurnDamageReduce > 0 {
+				if enemyDamage > battle.PlayerNextTurnDamageReduce {
+					enemyDamage -= battle.PlayerNextTurnDamageReduce
+				} else {
+					enemyDamage = 0
+				}
+				battle.PlayerNextTurnDamageReduce = 0
+			}
+			// 463 - n 回合内每回合所受的伤害减少 m 点
+			if battle.PlayerDamageReducePerRoundRounds > 0 && battle.PlayerDamageReducePerRoundAmount > 0 && enemyDamage > 0 {
+				if enemyDamage > battle.PlayerDamageReducePerRoundAmount {
+					enemyDamage -= battle.PlayerDamageReducePerRoundAmount
+				} else {
+					enemyDamage = 0
+				}
+			}
+			// 125 - n 回合内被攻击时减少受到的伤害上限 m
+			if battle.PlayerDamageCapRounds > 0 && battle.PlayerDamageCap > 0 && enemyDamage > battle.PlayerDamageCap {
+				enemyDamage = battle.PlayerDamageCap
+			}
+			// 128 - n 回合内接受的物理伤害转化为体力恢复
+			if battle.PlayerPhysDmgToHealRounds > 0 && enemySkillForTurn != nil && enemySkillForTurn.Category == 1 && enemyDamage > 0 {
+				heal := enemyDamage
+				newHP := battle.PlayerHP + heal
+				if newHP > battle.PlayerMaxHP {
+					newHP = battle.PlayerMaxHP
+				}
+				battle.PlayerHP = newHP
+				enemyDamage = 0
+			}
+			// 123 - n 回合内受到任何伤害时自身 XX 提高 m 级
+			if battle.PlayerHurtStatBoostRounds > 0 && enemyDamage > 0 {
+				stat := int(battle.PlayerHurtStatBoostStat)
+				if stat >= 0 && stat < 6 {
+					cur := int(battle.PlayerBattleLv[stat]) + int(battle.PlayerHurtStatBoostStages)
+					if cur > 6 {
+						cur = 6
+					}
+					if cur < -6 {
+						cur = -6
+					}
+					battle.PlayerBattleLv[stat] = int8(cur)
+				}
+			}
+				// 84 - 受到物理攻击时 m% 几率将对手麻痹
+				if battle.PlayerParalyzeOnPhysHitRounds > 0 && enemySkillForTurn.Category == 1 && enemyDamage > 0 &&
+					!sptboss.IsControlImmune(battle.EnemyID) && battle.EnemyStatus[gameskills.StatusIndexParalysis] == 0 {
+					if rand.Intn(100) < int(battle.PlayerParalyzeOnPhysHitChance) {
+						battle.EnemyStatus[gameskills.StatusIndexParalysis] = byte(rand.Intn(2) + 2)
+					}
+				}
+				// 92 - 受到物理攻击时 m% 几率将对手冻伤
+				if battle.PlayerFreezeOnPhysHitRounds > 0 && enemySkillForTurn.Category == 1 && enemyDamage > 0 &&
+					!sptboss.IsControlImmune(battle.EnemyID) && battle.EnemyStatus[gameskills.StatusIndexFreeze] == 0 {
+					if rand.Intn(100) < int(battle.PlayerFreezeOnPhysHitChance) {
+						battle.EnemyStatus[gameskills.StatusIndexFreeze] = byte(rand.Intn(2) + 1)
+						dmg := battle.EnemyMaxHP / 8
+						if dmg > battle.EnemyHP {
+							dmg = battle.EnemyHP
+						}
+						battle.EnemyHP -= dmg
+					}
+				}
+				// 108 - 受到物理攻击时 m% 几率将对手烧伤
+				if battle.PlayerBurnOnPhysHitRounds > 0 && enemySkillForTurn.Category == 1 && enemyDamage > 0 &&
+					!sptboss.IsStatusImmune(battle.EnemyID) && battle.EnemyStatus[gameskills.StatusIndexBurn] == 0 {
+					if rand.Intn(100) < int(battle.PlayerBurnOnPhysHitChance) {
+						battle.EnemyStatus[gameskills.StatusIndexBurn] = byte(rand.Intn(2) + 1)
+						dmg := battle.EnemyMaxHP / 8
+						if dmg > battle.EnemyHP {
+							dmg = battle.EnemyHP
+						}
+						battle.EnemyHP -= dmg
+					}
+				}
+				// 146 - n 回合内受物理攻击时 m% 使对方中毒
+				if battle.PlayerPoisonOnPhysHitRounds > 0 && enemySkillForTurn.Category == 1 && enemyDamage > 0 &&
+					!sptboss.IsStatusImmune(battle.EnemyID) && battle.EnemyStatus[gameskills.StatusIndexPoison] == 0 {
+					if rand.Intn(100) < int(battle.PlayerPoisonOnPhysHitChance) {
+						battle.EnemyStatus[gameskills.StatusIndexPoison] = byte(rand.Intn(2) + 1)
+					}
+				}
+				// 21 - 反弹伤害 1/k：受到攻击时对对手造成本次受到伤害的 1/divisor
+				if battle.PlayerReflectDamageRounds > 0 && battle.PlayerReflectDamageDivisor > 0 && enemyDamage > 0 {
+					reflectDmg := enemyDamage / uint32(battle.PlayerReflectDamageDivisor)
+					if reflectDmg > battle.EnemyHP {
+						reflectDmg = battle.EnemyHP
+					}
+					battle.EnemyHP -= reflectDmg
+				}
+				// 545 - 若受到伤害高于 m 则对手获得效果 type（如刺刃甲壳：type 1 = 防御-1）
+				if battle.PlayerReflectStatusWhenHitRounds > 0 && enemyDamage >= battle.PlayerReflectStatusWhenHitThreshold && enemyDamage > 0 && !sptboss.IsStatDropImmune(battle.EnemyID) {
+					typ := battle.PlayerReflectStatusWhenHitType
+					if typ <= 5 {
+						// type 0~5：对手对应能力等级 -1（0攻 1防 2特攻 3特防 4速 5命中）
+						cur := int(battle.EnemyBattleLv[typ])
+						cur--
+						if cur < -6 {
+							cur = -6
+						}
+						battle.EnemyBattleLv[typ] = int8(cur)
+					}
+					// type >= 10 可扩展为异常状态，此处仅实现能力下降
+				}
 				battle.PlayerHP -= enemyDamage
+				// 116 - n 回合内每次受到攻击造成伤害的 1/5 恢复自身体力
+				if battle.PlayerDefendHealRounds > 0 && enemyDamage > 0 {
+					heal := enemyDamage / 5
+					if heal > 0 {
+						newHP := battle.PlayerHP + heal
+						if newHP > battle.PlayerMaxHP {
+							newHP = battle.PlayerMaxHP
+						}
+						battle.PlayerHP = newHP
+					}
+				}
+				// 117 - n 回合内每次受到攻击 m% 概率使对手疲惫 1~3 回合
+				if battle.PlayerDefendFatigueRounds > 0 && enemyDamage > 0 &&
+					!sptboss.IsControlImmune(battle.EnemyID) && battle.EnemyStatus[gameskills.StatusIndexFatigue] == 0 {
+					if rand.Intn(100) < int(battle.PlayerDefendFatigueChance) {
+						battle.EnemyStatus[gameskills.StatusIndexFatigue] = byte(rand.Intn(3) + 1)
+					}
+				}
+				// 110 - n 回合内每次受到攻击时 m% 几率使对手 stat 等级 -1
+				if battle.PlayerDefendStatDropRounds > 0 && enemyDamage > 0 &&
+					!sptboss.IsStatDropImmune(battle.EnemyID) && battle.EnemyImmuneStatDropRounds == 0 {
+					if rand.Intn(100) < int(battle.PlayerDefendStatDropChance) {
+						stat := int(battle.PlayerDefendStatDropStat)
+						cur := int(battle.EnemyBattleLv[stat]) - 1
+						if cur < -6 {
+							cur = -6
+						}
+						battle.EnemyBattleLv[stat] = int8(cur)
+					}
+				}
+				// 172（敌方）- 若自身后出手则造成伤害的 1/n 回复体力
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 172 && !enemyFirst && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					div := 2
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						div = effArgs[0]
+					}
+					heal := enemyDamage / uint32(div)
+					if heal > 0 {
+						newHP := battle.EnemyHP + heal
+						if newHP > battle.EnemyMaxHP {
+							newHP = battle.EnemyMaxHP
+						}
+						battle.EnemyHP = newHP
+					}
+				}
+				// 458（敌方）- 若自身先出手则造成伤害的 n% 回复体力
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 458 && enemyFirst && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					pct := 50
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						pct = effArgs[0]
+					}
+					heal := enemyDamage * uint32(pct) / 100
+					if heal > 0 {
+						newHP := battle.EnemyHP + heal
+						if newHP > battle.EnemyMaxHP {
+							newHP = battle.EnemyMaxHP
+						}
+						battle.EnemyHP = newHP
+					}
+				}
+				// 459（敌方）- 附加对手防御/特防 n% 的固定伤害
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 459 && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					pct := 50
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						pct = effArgs[0]
+					}
+					var defVal uint32
+					if enemySkillForTurn.Category == 1 {
+						defVal = uint32(playerStats.Defence)
+					} else {
+						defVal = uint32(playerStats.SpDef)
+					}
+					bonus := defVal * uint32(pct) / 100
+					if bonus > 0 && battle.PlayerHP > 0 {
+						if bonus > battle.PlayerHP {
+							bonus = battle.PlayerHP
+						}
+						battle.PlayerHP -= bonus
+					}
+				}
+				// 461（敌方）- 若自身体力低于 1/m 则下回合起必定暴击
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 461 && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					div := 4
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						div = effArgs[0]
+					}
+					if battle.EnemyMaxHP > 0 && battle.EnemyHP > 0 && battle.EnemyHP < battle.EnemyMaxHP/uint32(div) {
+						battle.EnemyCritBuffRounds = 3
+					}
+				}
+				// 474（敌方）- 若自身先出手则 n% 几率自身 stat 提升 m 级
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 474 && enemyFirst && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					chance, statIdx, stages := 50, 0, 1
+					if len(effArgs) >= 1 {
+						chance = effArgs[0]
+					}
+					if len(effArgs) >= 2 {
+						statIdx = effArgs[1]
+					}
+					if len(effArgs) >= 3 && effArgs[2] > 0 {
+						stages = effArgs[2]
+					}
+					if statIdx >= 0 && statIdx < 6 && rand.Intn(100) < chance {
+						cur := int(battle.EnemyBattleLv[statIdx])
+						cur += stages
+						if cur > 6 {
+							cur = 6
+						}
+						battle.EnemyBattleLv[statIdx] = int8(cur)
+					}
+				}
+				// 475（敌方）- 若伤害不足 m 则下 n 回合必定暴击
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 475 && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					threshold, rounds := 100, 2
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						threshold = effArgs[0]
+					}
+					if len(effArgs) >= 2 && effArgs[1] > 0 {
+						rounds = effArgs[1]
+					}
+					if enemyDamage < uint32(threshold) {
+						battle.EnemyCritBuffRounds = byte(rounds + 1)
+					}
+				}
+				// 476（敌方）- 若自身后出手则回复 n 点体力
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 476 && !enemyFirst && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					amount := uint32(100)
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						amount = uint32(effArgs[0])
+					}
+					newHP := battle.EnemyHP + amount
+					if newHP > battle.EnemyMaxHP {
+						newHP = battle.EnemyMaxHP
+					}
+					battle.EnemyHP = newHP
+				}
+				// 186（敌方）- 若自身后出手则 n% 几率自身 stat 提升 m 级
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 186 && !enemyFirst && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					chance, statIdx, stages := 50, 0, 1
+					if len(effArgs) >= 1 {
+						chance = effArgs[0]
+					}
+					if len(effArgs) >= 2 {
+						statIdx = effArgs[1]
+					}
+					if len(effArgs) >= 3 && effArgs[2] > 0 {
+						stages = effArgs[2]
+					}
+					if statIdx >= 0 && statIdx < 6 && rand.Intn(100) < chance {
+						cur := int(battle.EnemyBattleLv[statIdx])
+						cur += stages
+						if cur > 6 {
+							cur = 6
+						}
+						battle.EnemyBattleLv[statIdx] = int8(cur)
+					}
+				}
+				// 122（敌方）- 若自身先出手则 n% 几率对手 stat 降低 m 级
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 122 && enemyFirst && enemyDamage > 0 &&
+					!sptboss.IsStatDropImmune(playerPetID) && battle.PlayerImmuneStatDropRounds == 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					chance, statIdx, stages := 50, 0, 1
+					if len(effArgs) >= 1 {
+						chance = effArgs[0]
+					}
+					if len(effArgs) >= 2 {
+						statIdx = effArgs[1]
+					}
+					if len(effArgs) >= 3 && effArgs[2] > 0 {
+						stages = effArgs[2]
+					}
+					if statIdx >= 0 && statIdx < 6 && rand.Intn(100) < chance {
+						cur := int(battle.PlayerBattleLv[statIdx])
+						cur -= stages
+						if cur < -6 {
+							cur = -6
+						}
+						battle.PlayerBattleLv[statIdx] = int8(cur)
+					}
+				}
+				// 148（敌方）- 若自身后出手则 n% 几率对手 stat 降低 m 级
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 148 && !enemyFirst && enemyDamage > 0 &&
+					!sptboss.IsStatDropImmune(playerPetID) && battle.PlayerImmuneStatDropRounds == 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					chance, statIdx, stages := 50, 0, 1
+					if len(effArgs) >= 1 {
+						chance = effArgs[0]
+					}
+					if len(effArgs) >= 2 {
+						statIdx = effArgs[1]
+					}
+					if len(effArgs) >= 3 && effArgs[2] > 0 {
+						stages = effArgs[2]
+					}
+					if statIdx >= 0 && statIdx < 6 && rand.Intn(100) < chance {
+						cur := int(battle.PlayerBattleLv[statIdx])
+						cur -= stages
+						if cur < -6 {
+							cur = -6
+						}
+						battle.PlayerBattleLv[statIdx] = int8(cur)
+					}
+				}
+				// 147（敌方）- 若自身后出手则 n% 几率令对手陷入异常状态
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 147 && !enemyFirst && enemyDamage > 0 &&
+					!sptboss.IsStatusImmune(playerPetID) && battle.PlayerImmuneStatusRounds == 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					chance, statusIdx := 50, gameskills.StatusIndexBurn
+					if len(effArgs) >= 1 {
+						chance = effArgs[0]
+					}
+					if len(effArgs) >= 2 {
+						statusIdx = effArgs[1]
+					}
+					if statusIdx >= 0 && statusIdx < 20 && battle.PlayerStatus[statusIdx] == 0 && rand.Intn(100) < chance {
+						battle.PlayerStatus[statusIdx] = 2
+					}
+				}
+				// 173（敌方）- 若自身先出手则 n% 几率令对手陷入异常状态
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 173 && enemyFirst && enemyDamage > 0 &&
+					!sptboss.IsStatusImmune(playerPetID) && battle.PlayerImmuneStatusRounds == 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					chance, statusIdx := 50, gameskills.StatusIndexBurn
+					if len(effArgs) >= 1 {
+						chance = effArgs[0]
+					}
+					if len(effArgs) >= 2 {
+						statusIdx = effArgs[1]
+					}
+					if statusIdx >= 0 && statusIdx < 20 && battle.PlayerStatus[statusIdx] == 0 && rand.Intn(100) < chance {
+						battle.PlayerStatus[statusIdx] = 2
+					}
+				}
+				// 115（敌方）- n% 概率附加速度的 1/m 点固定伤害
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 115 && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					chance, divisor := 30, 2
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						chance = effArgs[0]
+					}
+					if len(effArgs) >= 2 && effArgs[1] > 0 {
+						divisor = effArgs[1]
+					}
+					if rand.Intn(100) < chance {
+						bonus := uint32(enemyStats.Speed) / uint32(divisor)
+						if bonus > 0 && battle.PlayerHP > 0 {
+							if bonus > battle.PlayerHP {
+								bonus = battle.PlayerHP
+							}
+							battle.PlayerHP -= bonus
+						}
+					}
+				}
+				// 119（敌方）- 伤害为偶数时 30% 疲惫对手 +1 回合；奇数时 30% 自身速度 +1
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 119 && enemyDamage > 0 {
+					if enemyDamage%2 == 0 {
+						if !sptboss.IsControlImmune(playerPetID) && battle.PlayerImmuneStatusRounds == 0 && rand.Intn(100) < 30 {
+							if battle.PlayerStatus[gameskills.StatusIndexFatigue] == 0 {
+								battle.PlayerStatus[gameskills.StatusIndexFatigue] = 1
+							}
+						}
+					} else {
+						if rand.Intn(100) < 30 {
+							cur := int(battle.EnemyBattleLv[gameskills.StatSpeed]) + 1
+							if cur > 6 {
+								cur = 6
+							}
+							battle.EnemyBattleLv[gameskills.StatSpeed] = int8(cur)
+						}
+					}
+				}
+				// 134（敌方）- 造成的伤害低于 n，则自身所有技能的 PP +m
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 134 && enemyDamage > 0 && !battle.EnemyPPInfinite {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					threshold, ppBonus := 100, 1
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						threshold = effArgs[0]
+					}
+					if len(effArgs) >= 2 && effArgs[1] > 0 {
+						ppBonus = effArgs[1]
+					}
+					if enemyDamage < uint32(threshold) {
+						for i := 0; i < 4; i++ {
+							if battle.EnemySkillPP[i] > 0 {
+								newPP := int(battle.EnemySkillPP[i]) + ppBonus
+								if newPP > 255 {
+									newPP = 255
+								}
+								battle.EnemySkillPP[i] = byte(newPP)
+							}
+						}
+					}
+				}
+				// 188（敌方）- 若自身处于异常状态，则附加对应的反击效果
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 188 && enemyDamage > 0 && !sptboss.IsStatusImmune(playerPetID) && battle.PlayerImmuneStatusRounds == 0 {
+					if battle.EnemyStatus[gameskills.StatusIndexBurn] > 0 && battle.PlayerStatus[gameskills.StatusIndexBurn] == 0 {
+						battle.PlayerStatus[gameskills.StatusIndexBurn] = byte(rand.Intn(2) + 1)
+						dmg := battle.PlayerMaxHP / 8
+						if dmg > battle.PlayerHP {
+							dmg = battle.PlayerHP
+						}
+						battle.PlayerHP -= dmg
+					} else if battle.EnemyStatus[gameskills.StatusIndexFreeze] > 0 && battle.PlayerStatus[gameskills.StatusIndexFreeze] == 0 {
+						battle.PlayerStatus[gameskills.StatusIndexFreeze] = byte(rand.Intn(2) + 1)
+						dmg := battle.PlayerMaxHP / 8
+						if dmg > battle.PlayerHP {
+							dmg = battle.PlayerHP
+						}
+						battle.PlayerHP -= dmg
+					} else if battle.EnemyStatus[gameskills.StatusIndexPoison] > 0 && battle.PlayerStatus[gameskills.StatusIndexPoison] == 0 {
+						battle.PlayerStatus[gameskills.StatusIndexPoison] = byte(rand.Intn(2) + 1)
+						dmg := battle.PlayerMaxHP / 8
+						if dmg > battle.PlayerHP {
+							dmg = battle.PlayerHP
+						}
+						battle.PlayerHP -= dmg
+					}
+				}
+				// 428（敌方）- 命中时附加 m 点固定伤害
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 428 && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					bonus := uint32(50)
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						bonus = uint32(effArgs[0])
+					}
+					if bonus > 0 && battle.PlayerHP > 0 {
+						if bonus > battle.PlayerHP {
+							bonus = battle.PlayerHP
+						}
+						battle.PlayerHP -= bonus
+					}
+				}
+				// 464（敌方）- 命中时 m% 概率使对方烧伤
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 464 && enemyDamage > 0 &&
+					!sptboss.IsStatusImmune(playerPetID) && battle.PlayerImmuneStatusRounds == 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					chance := 30
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						chance = effArgs[0]
+					}
+					if rand.Intn(100) < chance && battle.PlayerStatus[gameskills.StatusIndexBurn] == 0 {
+						battle.PlayerStatus[gameskills.StatusIndexBurn] = byte(rand.Intn(2) + 1)
+						dmg := battle.PlayerMaxHP / 8
+						if dmg > battle.PlayerHP {
+							dmg = battle.PlayerHP
+						}
+						battle.PlayerHP -= dmg
+					}
+				}
+				// 181（敌方）- n% 概率使对手XX，每次使用m%增加，最高k%
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 181 && enemyHit &&
+					!sptboss.IsStatusImmune(playerPetID) && battle.PlayerImmuneStatusRounds == 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					statusIdx, baseChance, increment, maxChance := gameskills.StatusIndexBurn, 30, 10, 100
+					if len(effArgs) >= 1 {
+						statusIdx = effArgs[0]
+					}
+					if len(effArgs) >= 2 && effArgs[1] > 0 {
+						baseChance = effArgs[1]
+					}
+					if len(effArgs) >= 3 && effArgs[2] > 0 {
+						increment = effArgs[2]
+					}
+					if len(effArgs) >= 4 && effArgs[3] > 0 {
+						maxChance = effArgs[3]
+					}
+					if battle.Enemy181CurrentChance == 0 {
+						battle.Enemy181CurrentChance = byte(baseChance)
+						battle.Enemy181StatusIdx = byte(statusIdx)
+						battle.Enemy181MaxChance = byte(maxChance)
+						battle.Enemy181Increment = byte(increment)
+					}
+					currentChance := int(battle.Enemy181CurrentChance)
+					if statusIdx >= 0 && statusIdx < 20 && rand.Intn(100) < currentChance {
+						if battle.PlayerStatus[statusIdx] == 0 {
+							battle.PlayerStatus[statusIdx] = byte(rand.Intn(2) + 2)
+						}
+					}
+					newChance := currentChance + increment
+					if newChance > maxChance {
+						newChance = maxChance
+					}
+					battle.Enemy181CurrentChance = byte(newChance)
+				}
+				// 441（敌方）- 每次攻击暴击率 +n%，最高 m%
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 441 && enemyHit {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					increment, maxBonus := 1, 8
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						increment = effArgs[0] / 6
+						if increment < 1 {
+							increment = 1
+						}
+					}
+					if len(effArgs) >= 2 && effArgs[1] > 0 {
+						maxBonus = effArgs[1] / 6
+						if maxBonus < 1 {
+							maxBonus = 1
+						}
+					}
+					newBonus := int(battle.EnemyCritRateBonus) + increment
+					if newBonus > maxBonus {
+						newBonus = maxBonus
+					}
+					if newBonus > 16 {
+						newBonus = 16
+					}
+					battle.EnemyCritRateBonus = byte(newBonus)
+				}
+				// 490（敌方）- 若造成伤害超过 m，则自身速度 +n 级
+				if enemySkillForTurn != nil && enemySkillForTurn.EffectID == 490 && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					threshold, stages := 200, 1
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						threshold = effArgs[0]
+					}
+					if len(effArgs) >= 2 && effArgs[1] > 0 {
+						stages = effArgs[1]
+					}
+					if enemyDamage > uint32(threshold) {
+						cur := int(battle.EnemyBattleLv[gameskills.StatSpeed]) + stages
+						if cur > 6 {
+							cur = 6
+						}
+						battle.EnemyBattleLv[gameskills.StatSpeed] = int8(cur)
+					}
+				}
+				// 89（敌方）- 吸血：造成伤害时恢复自身 damage/divisor 体力
+				if battle.EnemyLifestealRounds > 0 && enemyDamage > 0 && battle.EnemyLifestealDivisor > 0 {
+					heal := enemyDamage / uint32(battle.EnemyLifestealDivisor)
+					if heal > 0 {
+						newHP := battle.EnemyHP + heal
+						if newHP > battle.EnemyMaxHP {
+							newHP = battle.EnemyMaxHP
+						}
+						battle.EnemyHP = newHP
+					}
+				}
+				// 104（敌方）- n 回合内每次直接攻击 m% 几率附带衰弱（随机能力-1）
+				if battle.EnemyWeaknessOnHitRounds > 0 && enemySkillForTurn.Category != 4 && enemyDamage > 0 &&
+					!sptboss.IsStatDropImmune(playerPetID) && battle.PlayerImmuneStatDropRounds == 0 {
+					if rand.Intn(100) < int(battle.EnemyWeaknessOnHitChance) {
+						stat := rand.Intn(6)
+						cur := int(battle.PlayerBattleLv[stat])
+						cur--
+						if cur < -6 {
+							cur = -6
+						}
+						battle.PlayerBattleLv[stat] = int8(cur)
+					}
+				}
+				// 109（敌方）- 造成伤害时 m% 几率令对手冻伤
+				if battle.EnemyFreezeOnDealDamageRounds > 0 && enemySkillForTurn.Category != 4 && enemyDamage > 0 &&
+					!sptboss.IsControlImmune(playerPetID) && battle.PlayerStatus[gameskills.StatusIndexFreeze] == 0 {
+					if rand.Intn(100) < int(battle.EnemyFreezeOnDealDamageChance) {
+						battle.PlayerStatus[gameskills.StatusIndexFreeze] = byte(rand.Intn(2) + 1)
+						dmg := battle.PlayerMaxHP / 8
+						if dmg > battle.PlayerHP {
+							dmg = battle.PlayerHP
+						}
+						battle.PlayerHP -= dmg
+					}
+				}
+				// 107（敌方）- 若本次攻击造成的伤害小于 n 则自身 xx 等级提升 1
+				if enemyHit && enemySkillForTurn != nil && enemySkillForTurn.EffectID == 107 && enemySkillForTurn.Category != 4 && enemyDamage > 0 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					if len(effArgs) >= 2 {
+						thresh, statIdx := effArgs[0], effArgs[1]
+						if statIdx >= 0 && statIdx < 6 && enemyDamage < uint32(thresh) {
+							cur := int(battle.EnemyBattleLv[statIdx])
+							cur++
+							if cur > 6 {
+								cur = 6
+							}
+							battle.EnemyBattleLv[statIdx] = int8(cur)
+						}
+					}
+				}
+				// 66 - 击败回血（敌方版本）：当次攻击击败我方时恢复敌方最大体力的1/n
+				if playerHPBeforeDamage > 0 && battle.PlayerHP == 0 && enemySkillForTurn != nil && enemySkillForTurn.EffectID == 66 {
+					div := 2
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						div = effArgs[0]
+					}
+					heal := battle.EnemyMaxHP / uint32(div)
+					if heal > 0 {
+						newHP := battle.EnemyHP + heal
+						if newHP > battle.EnemyMaxHP {
+							newHP = battle.EnemyMaxHP
+						}
+						battle.EnemyHP = newHP
+					}
+				}
+				// 67 - 击败减对方下只最大HP（敌方版本）：当次攻击击败我方时减少我方下次出战精灵的最大体力1/n
+				if playerHPBeforeDamage > 0 && battle.PlayerHP == 0 && enemySkillForTurn != nil && enemySkillForTurn.EffectID == 67 {
+					div := 2
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						div = effArgs[0]
+					}
+					battle.EnemyKillReduceMaxHpDivisor = byte(div)
+				}
+				// 158（敌方）- 击败对手后 n% 几率自身 stat 提升 m 级
+				if playerHPBeforeDamage > 0 && battle.PlayerHP == 0 && enemySkillForTurn != nil && enemySkillForTurn.EffectID == 158 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					chance, statIdx, stages := 100, 0, 1
+					if len(effArgs) >= 1 {
+						chance = effArgs[0]
+					}
+					if len(effArgs) >= 2 {
+						statIdx = effArgs[1]
+					}
+					if len(effArgs) >= 3 && effArgs[2] > 0 {
+						stages = effArgs[2]
+					}
+					if statIdx >= 0 && statIdx < 6 && rand.Intn(100) < chance {
+						cur := int(battle.EnemyBattleLv[statIdx])
+						cur += stages
+						if cur > 6 {
+							cur = 6
+						}
+						battle.EnemyBattleLv[statIdx] = int8(cur)
+					}
+				}
+				// 73 - 先手反弹（敌方版本）：如果敌方先出手，则受攻击时反弹200%的伤害给我方
+				if battle.EnemyFirstStrikeReflectActive && battle.EnemyFirstStrikeReflectRounds > 0 && enemyDamage > 0 {
+					reflectDamage := enemyDamage * 2
+					if reflectDamage > battle.PlayerHP {
+						reflectDamage = battle.PlayerHP
+					}
+					battle.PlayerHP -= reflectDamage
+				}
 				if battle.PlayerHP > battle.PlayerMaxHP {
 					battle.PlayerHP = 0 // uint 下溢时置 0
 				}
@@ -9175,18 +13162,72 @@ runEnemyTurnFirst:
 			//   - 第一个 HP/status/battleLv 参数 = 出手方（此处为敌人）
 			//   - 第二个 HP/status/battleLv 参数 = 被攻击方（此处为玩家）
 			// 仅当本次命中或为自身必中强化类技能时才应用效果；后者由 MustHit 标记保证。
-			if enemyHit && enemySkillForTurn != nil {
+			// 478 - 我方施加的“对手属性技能无效”：敌方使用 Category=4 时跳过效果
+			enemyStatusSkillInvalid := battle.EnemyStatusSkillInvalidRounds > 0 && enemySkillForTurn != nil && enemySkillForTurn.Category == 4
+			if enemyHit && enemySkillForTurn != nil && !enemyStatusSkillInvalid {
 				var enemyEffectRecoil uint32
 				defenderPetID := 0
 				if battle.ActivePetIndex >= 0 && battle.ActivePetIndex < len(user.Pets) {
 					defenderPetID = user.Pets[battle.ActivePetIndex].ID
 				}
+				var oldPlayerLvE [6]int8
+				var oldEnemyLvE [6]int8
+				var oldPlayerStatusE, oldEnemyStatusE [20]byte
+				if battle.EnemyStatusMirrorRounds > 0 {
+					oldPlayerLvE = battle.PlayerBattleLv
+					oldEnemyLvE = battle.EnemyBattleLv
+					oldPlayerStatusE = battle.PlayerStatus
+					oldEnemyStatusE = battle.EnemyStatus
+				}
 				_, enemyEffectRecoil = gameskills.ApplyEffect(enemySkillForTurn, enemyDamage,
 					&battle.EnemyHP, &battle.PlayerHP,
 					battle.EnemyMaxHP, battle.PlayerMaxHP,
 					&battle.EnemyBattleLv, &battle.PlayerBattleLv,
-					&battle.EnemyStatus, &battle.PlayerStatus, defenderPetID)
+					&battle.EnemyStatus, &battle.PlayerStatus, defenderPetID,
+					battle.PlayerImmuneStatDropRounds, battle.PlayerImmuneStatusRounds)
 				_ = enemyEffectRecoil
+				if battle.EnemyStatusMirrorRounds > 0 {
+					for i := 0; i < 6; i++ {
+						deltaE := int(battle.EnemyBattleLv[i]) - int(oldEnemyLvE[i])
+						deltaP := int(battle.PlayerBattleLv[i]) - int(oldPlayerLvE[i])
+						v := int(oldPlayerLvE[i]) + deltaE + deltaP
+						if v > 6 {
+							v = 6
+						}
+						if v < -6 {
+							v = -6
+						}
+						battle.PlayerBattleLv[i] = int8(v)
+						v = int(oldEnemyLvE[i]) + deltaE + deltaP
+						if v > 6 {
+							v = 6
+						}
+						if v < -6 {
+							v = -6
+						}
+						battle.EnemyBattleLv[i] = int8(v)
+					}
+					for i := 0; i < 20; i++ {
+						deltaE := int(battle.EnemyStatus[i]) - int(oldEnemyStatusE[i])
+						deltaP := int(battle.PlayerStatus[i]) - int(oldPlayerStatusE[i])
+						v := int(oldPlayerStatusE[i]) + deltaE + deltaP
+						if v < 0 {
+							v = 0
+						}
+						if v > 10 {
+							v = 10
+						}
+						battle.PlayerStatus[i] = byte(v)
+						v = int(oldEnemyStatusE[i]) + deltaE + deltaP
+						if v < 0 {
+							v = 0
+						}
+						if v > 10 {
+							v = 10
+						}
+						battle.EnemyStatus[i] = byte(v)
+					}
+				}
 
 				// 敌方暴击率提升效果（SideEffect 58 系列）
 				if enemySkillForTurn.EffectID == 58 {
@@ -9202,10 +13243,22 @@ runEnemyTurnFirst:
 						}
 					}
 				}
+				// 敌方 32：n 回合暴击率增加 1/16
+				if enemySkillForTurn.EffectID == 32 {
+					effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+					rounds := 3
+					if len(effArgs) >= 1 && effArgs[0] > 0 {
+						rounds = effArgs[0]
+					}
+					if rounds > 10 {
+						rounds = 10
+					}
+					battle.EnemyCritRateBonusRounds = byte(rounds + 1)
+				}
 			}
 
-			// 敌方若也配置了“不灭之火”效果，同样能在若干回合内令我方每回合受到固定伤害
-			if enemySkillForTurn.ID == 11023 {
+			// 敌方若也配置了“不灭之火”效果，同样能在若干回合内令我方每回合受到固定伤害（478 时属性技能无效，不设置）
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 60 {
 				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
 				rounds, perTurn := 0, 0
 				if len(effArgs) >= 1 {
@@ -9214,15 +13267,623 @@ runEnemyTurnFirst:
 				if len(effArgs) >= 2 {
 					perTurn = effArgs[1]
 				}
-				if rounds < 0 {
-					rounds = 0
-				}
-				if perTurn < 0 {
-					perTurn = 0
-				}
 				if rounds > 0 && perTurn > 0 {
 					battle.PlayerFixedDotRounds = byte(rounds)
 					battle.PlayerFixedDotDamage = uint32(perTurn)
+				}
+			}
+			// 敌方 76：m% 几率在 n 回合内每回合造成 k 点固定伤害
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 76 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				chance, rounds, perTurn := 100, 0, 0
+				if len(effArgs) >= 1 {
+					chance = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					rounds = effArgs[1]
+				}
+				if len(effArgs) >= 3 {
+					perTurn = effArgs[2]
+				}
+				if rounds > 0 && perTurn > 0 && rand.Intn(100) < chance {
+					battle.PlayerFixedDotRounds = byte(rounds)
+					battle.PlayerFixedDotDamage = uint32(perTurn)
+				}
+			}
+			// 敌方 77：n 回合内每次使用技能恢复 m 点体力
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 77 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, amount := 0, 0
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					amount = effArgs[1]
+				}
+				if rounds > 0 && amount > 0 {
+					battle.EnemyRegenPerUseRounds = byte(rounds)
+					battle.EnemyRegenPerUseAmount = uint32(amount)
+				}
+			}
+			// 敌方 78：n 回合内物理攻击对敌方必定 miss
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 78 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds := 0
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if rounds > 0 {
+					battle.EnemyPhysMissRounds = byte(rounds)
+				}
+			}
+			// 敌方 83：自身雄性下两回合必定先手；雌性下两回合必定暴击
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 83 && enemyHit {
+				enemyPet := petMgr.Get(battle.EnemyID)
+				if enemyPet != nil {
+					if enemyPet.Gender == 1 {
+						battle.EnemyMaleFirstStrikeRounds = 2
+					} else if enemyPet.Gender == 2 {
+						battle.EnemyFemaleCritRounds = 2
+					}
+				}
+			}
+			// 敌方 84：n 回合内受到物理攻击时 m% 几率将对手麻痹
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 84 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, chance := 5, 50
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.EnemyParalyzeOnPhysHitRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.EnemyParalyzeOnPhysHitChance = byte(chance)
+				}
+			}
+			// 敌方 86/106：n 回合内属性（特殊）攻击对自身必定 miss
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && (enemySkillForTurn.EffectID == 86 || enemySkillForTurn.EffectID == 106) && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds := 0
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if rounds > 0 {
+					battle.EnemySpecialMissRounds = byte(rounds)
+				}
+			}
+			// 敌方 89：n 回合内每次造成伤害的 1/m 恢复体力
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 89 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, div := 0, 4
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					div = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.EnemyLifestealRounds = byte(rounds)
+					battle.EnemyLifestealDivisor = byte(div)
+				}
+			}
+			// 敌方 90：n 回合内自身造成的伤害为 m 倍
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 90 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, mult := 0, 2
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					mult = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.EnemyDamageMultRounds = byte(rounds)
+					battle.EnemyDamageMult = byte(mult)
+				}
+			}
+			// 敌方 92：n 回合内受到物理攻击时 m% 几率将对手冻伤
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 92 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, chance := 5, 50
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.EnemyFreezeOnPhysHitRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.EnemyFreezeOnPhysHitChance = byte(chance)
+				}
+			}
+			// 敌方 98：n 回合内对雄性精灵的伤害为 m 倍
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 98 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, mult := 0, 2
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					mult = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.EnemyMaleDamageMultRounds = byte(rounds)
+					battle.EnemyMaleDamageMult = byte(mult)
+				}
+			}
+			// 敌方 104：n 回合内每次直接攻击 m% 几率附带衰弱
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 104 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, chance := 0, 50
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.EnemyWeaknessOnHitRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.EnemyWeaknessOnHitChance = byte(chance)
+				}
+			}
+			// 敌方 91：n 回合内双方状态变化同时影响己方与对手
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 91 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds := 0
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if rounds > 0 {
+					battle.EnemyStatusMirrorRounds = byte(rounds)
+				}
+			}
+			// 敌方 127：n% 概率 m 回合内受到伤害减半
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 127 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				chance, rounds := 50, 3
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					chance = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					rounds = effArgs[1]
+				}
+				if chance > 100 {
+					chance = 100
+				}
+				if rand.Intn(100) < chance && rounds > 0 {
+					battle.EnemyDamageHalfRounds = byte(rounds)
+				}
+			}
+			// 敌方 146：n 回合内受物理攻击时 m% 使对方中毒
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 146 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, m := 5, 50
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					m = effArgs[1]
+				}
+				if m > 100 {
+					m = 100
+				}
+				if rounds > 0 {
+					battle.EnemyPoisonOnPhysHitRounds = byte(rounds)
+					battle.EnemyPoisonOnPhysHitChance = byte(m)
+				}
+			}
+			// 敌方 150：n 回合内对手（我方）每回合防、特防等级 m
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 150 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, m := 0, 1
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					m = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.PlayerDefSpDefRounds = byte(rounds)
+					if m < -6 {
+						m = -6
+					}
+					if m > 6 {
+						m = 6
+					}
+					battle.PlayerDefSpDefStages = int8(m)
+				}
+			}
+			// 敌方 108：n 回合内受到物理攻击时 m% 几率将对手烧伤
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 108 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, chance := 5, 50
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.EnemyBurnOnPhysHitRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.EnemyBurnOnPhysHitChance = byte(chance)
+				}
+			}
+			// 敌方 109：n 回合内造成伤害时 m% 几率令对手冻伤
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 109 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, chance := 5, 50
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					chance = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.EnemyFreezeOnDealDamageRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.EnemyFreezeOnDealDamageChance = byte(chance)
+				}
+			}
+			// 敌方 77（已有状态）：每次使用技能恢复 m 点体力
+			if enemyHit && battle.EnemyRegenPerUseRounds > 0 && battle.EnemyRegenPerUseAmount > 0 {
+				heal := battle.EnemyRegenPerUseAmount
+				if heal > battle.EnemyMaxHP-battle.EnemyHP {
+					heal = battle.EnemyMaxHP - battle.EnemyHP
+				}
+				if heal > 0 {
+					battle.EnemyHP += heal
+				}
+			}
+
+			// 敌方 Effect ID 39：n%降低对手所有技能m点PP值（478 时属性技能无效，不执行）
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 39 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				chance, ppReduction := 100, 1
+				if len(effArgs) >= 1 {
+					chance = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					ppReduction = effArgs[1]
+				}
+				if chance < 0 {
+					chance = 0
+				}
+				if chance > 100 {
+					chance = 100
+				}
+				if ppReduction < 0 {
+					ppReduction = 0
+				}
+				// 随机判定是否触发
+				if rand.Intn(100) < chance && ppReduction > 0 {
+					// 降低玩家所有技能的 PP（但不能低于 0）
+					for i := 0; i < 4; i++ {
+						if battle.PlayerSkillPP[i] > 0 {
+							if int(battle.PlayerSkillPP[i]) >= ppReduction {
+								battle.PlayerSkillPP[i] -= byte(ppReduction)
+							} else {
+								battle.PlayerSkillPP[i] = 0
+							}
+						}
+					}
+					// 检查玩家当前选择的技能（skillID）的 PP 是否为 0
+					// 如果玩家选择的技能 PP 为 0，则玩家下回合使用该技能时会因为 PP 为 0 而无法行动
+					// 这个效果会在下回合的 PP 检查中自然生效（已在第8431-8448行实现）
+				}
+			}
+
+			// 敌方多回合 BUFF/护盾（41-50）施加于自身
+			if enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				n := 0
+				if len(effArgs) >= 1 {
+					n = effArgs[0]
+				}
+				if n < 0 {
+					n = 0
+				}
+				switch enemySkillForTurn.EffectID {
+				case 41:
+					if len(effArgs) >= 2 {
+						n = effArgs[1]
+					}
+					if n > 0 {
+						battle.EnemyFireResistRounds = byte(n)
+					}
+				case 42:
+					if len(effArgs) >= 2 {
+						n = effArgs[1]
+					}
+					if n > 0 {
+						battle.EnemyElectricBoostRounds = byte(n)
+					}
+				case 44:
+					if n > 0 {
+						battle.EnemySpDefHalfRounds = byte(n)
+					}
+				case 46:
+					if n > 0 {
+						battle.EnemyBlockCount = byte(n)
+					}
+				case 47:
+					if n > 0 {
+						battle.EnemyImmuneStatDropRounds = byte(n)
+					}
+				case 48:
+					if n > 0 {
+						battle.EnemyImmuneStatusRounds = byte(n)
+					}
+				case 49:
+					if n > 0 {
+						battle.EnemyShieldPoints = uint32(n)
+					}
+				case 50:
+					if n > 0 {
+						battle.EnemyPhysDefHalfRounds = byte(n)
+					}
+				case 45:
+					if n > 0 {
+						battle.EnemyCopyDefRounds = byte(n)
+					}
+				case 51:
+					if n > 0 {
+						battle.EnemyCopyAtkRounds = byte(n)
+					}
+				case 57:
+					div := 5
+					if len(effArgs) >= 2 && effArgs[1] > 0 {
+						div = effArgs[1]
+					}
+					if n > 0 {
+						battle.EnemyRegenRounds = byte(n)
+						battle.EnemyRegenDivisor = byte(div)
+					}
+				case 65:
+					mult, elemType := 2, 0
+					if len(effArgs) >= 2 {
+						mult = effArgs[1]
+					}
+					if len(effArgs) >= 3 {
+						elemType = effArgs[2]
+					}
+					if n > 0 && mult > 0 {
+						battle.EnemyElemPowerRounds = byte(n)
+						battle.EnemyElemPowerMult = byte(mult)
+						battle.EnemyElemPowerType = byte(elemType)
+					}
+				case 68:
+					if n > 0 {
+						battle.EnemyEndureRounds = byte(n)
+					}
+				case 52:
+					if n > 0 {
+						battle.EnemyEvasionRounds = byte(n)
+					}
+				case 53:
+					mult := 2
+					if len(effArgs) >= 2 && effArgs[1] > 0 {
+						mult = effArgs[1]
+					}
+					if n > 0 {
+						battle.EnemyDamageMultRounds = byte(n)
+						battle.EnemyDamageMult = byte(mult)
+					}
+				case 54:
+					mult := 2
+					if len(effArgs) >= 2 && effArgs[1] > 0 {
+						mult = effArgs[1]
+					}
+					if n > 0 {
+						battle.EnemyDamageReductRounds = byte(n)
+						battle.EnemyDamageReduct = byte(mult)
+					}
+				case 55:
+					if n > 0 {
+						battle.EnemyTypeSwapRounds = byte(n)
+					}
+				case 56:
+					if n > 0 {
+						battle.EnemyTypeCopyRounds = byte(n)
+					}
+				case 62:
+					if n > 0 {
+						battle.EnemyDestinyBondRounds = byte(n)
+					}
+				case 59: // 牺牲强化下一只：当前精灵被击败时，下一只上场的精灵获得能力强化
+					// SideEffectArg: stat1 stages1 stat2 stages2 ... (例如 "0 2 2 1" 表示攻击+2级、特攻+1级)
+					// 如果没有参数，默认全能力+1级
+					battle.EnemySacrificeBuffActive = true
+					// 清空之前的强化记录
+					for i := 0; i < 6; i++ {
+						battle.EnemySacrificeBuffStats[i] = 0
+					}
+					if len(effArgs) >= 2 {
+						// 解析参数：stat stages 对
+						for i := 0; i+1 < len(effArgs); i += 2 {
+							stat := effArgs[i]
+							stages := effArgs[i+1]
+							if stat >= 0 && stat < 6 && stages > 0 {
+								battle.EnemySacrificeBuffStats[stat] = int8(stages)
+							}
+						}
+					} else {
+						// 默认全能力+1级
+						for i := 0; i < 6; i++ {
+							battle.EnemySacrificeBuffStats[i] = 1
+						}
+					}
+				case 69: // 药剂反噬：下n回合对手使用体力药剂时效果变成减少相应的体力
+					if n > 0 {
+						battle.EnemyPotionReverseRounds = byte(n)
+					}
+				case 71: // 牺牲暴击：自己牺牲(体力降到0), 使下一只出战精灵在前两回合内必定致命一击
+					battle.EnemySacrificeCritActive = true
+				case 72: // Miss死亡：如果此回合miss，则立即死亡
+					battle.EnemyMissDeathActive = true
+				case 73: // 先手反弹：如果先出手，则受攻击时反弹200%的伤害给对手，持续n回合
+					if n > 0 {
+						battle.EnemyFirstStrikeReflectRounds = byte(n)
+						// 检查本回合是否先手：如果敌方先手（enemyFirst），则激活
+						if enemyFirst {
+							battle.EnemyFirstStrikeReflectActive = true
+						}
+					}
+				}
+			}
+			// 463（敌方）- n 回合内每回合所受的伤害减少 m 点
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 463 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, amount := 0, 0
+				if len(effArgs) >= 1 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					amount = effArgs[1]
+				}
+				if rounds > 0 && amount > 0 {
+					battle.EnemyDamageReducePerRoundRounds = byte(rounds)
+					battle.EnemyDamageReducePerRoundAmount = uint32(amount)
+				}
+			}
+			// 110（敌方）- n 回合内每次受到攻击时 m% 几率使对手 stat 等级 -1
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 110 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, chance, stat := 0, 50, 0
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					chance = effArgs[1]
+				}
+				if len(effArgs) >= 3 {
+					stat = effArgs[2]
+				}
+				if rounds > 0 {
+					battle.EnemyDefendStatDropRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.EnemyDefendStatDropChance = byte(chance)
+					if stat < 0 || stat > 5 {
+						stat = 0
+					}
+					battle.EnemyDefendStatDropStat = byte(stat)
+				}
+			}
+			// 116（敌方）- n 回合内每次受到攻击造成伤害的 1/5 恢复自身体力
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 116 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds := 0
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					rounds = effArgs[0]
+				}
+				if rounds > 0 {
+					battle.EnemyDefendHealRounds = byte(rounds)
+				}
+			}
+			// 117（敌方）- n 回合内每次受到攻击 m% 概率使对手疲惫 1~3 回合
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 117 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, chance := 0, 30
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					chance = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.EnemyDefendFatigueRounds = byte(rounds)
+					if chance > 100 {
+						chance = 100
+					}
+					battle.EnemyDefendFatigueChance = byte(chance)
+				}
+			}
+			// 123（敌方）- n 回合内受到任何伤害时自身 XX 提高 m 级
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 123 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, stat, stages := 0, 0, 1
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 {
+					stat = effArgs[1]
+				}
+				if len(effArgs) >= 3 && effArgs[2] > 0 {
+					stages = effArgs[2]
+				}
+				if rounds > 0 && stat >= 0 && stat < 6 {
+					battle.EnemyHurtStatBoostRounds = byte(rounds)
+					battle.EnemyHurtStatBoostStat = byte(stat)
+					battle.EnemyHurtStatBoostStages = int8(stages)
+				}
+			}
+			// 125（敌方）- n 回合内被攻击时减少受到的伤害上限 m
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 125 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, cap := 0, 0
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					cap = effArgs[1]
+				}
+				if rounds > 0 && cap > 0 {
+					battle.EnemyDamageCapRounds = byte(rounds)
+					battle.EnemyDamageCap = uint32(cap)
+				}
+			}
+			// 126（敌方）- n 回合内每回合自身攻击和速度 +m 级
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 126 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds, stages := 0, 1
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					rounds = effArgs[0]
+				}
+				if len(effArgs) >= 2 && effArgs[1] > 0 {
+					stages = effArgs[1]
+				}
+				if rounds > 0 {
+					battle.EnemySpeedBoostRounds = byte(rounds)
+					battle.EnemySpeedBoostStages = int8(stages)
+				}
+			}
+			// 128（敌方）- n 回合内接受的物理伤害转化为体力恢复
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 128 && enemyHit {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds := 0
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					rounds = effArgs[0]
+				}
+				if rounds > 0 {
+					battle.EnemyPhysDmgToHealRounds = byte(rounds)
+				}
+			}
+			// 471（敌方）- 先出手时 n 回合内免疫异常状态
+			if enemySkillForTurn != nil && !enemyStatusSkillInvalid && enemySkillForTurn.EffectID == 471 && enemyHit && enemyFirst {
+				effArgs := gameskills.ParseSideEffectArg(enemySkillForTurn.SideEffectArg)
+				rounds := 0
+				if len(effArgs) >= 1 && effArgs[0] > 0 {
+					rounds = effArgs[0]
+				}
+				if rounds > 0 {
+					battle.EnemyImmuneStatusRounds = byte(rounds)
 				}
 			}
 
@@ -9253,6 +13914,470 @@ afterEnemyTurn:
 	}
 	if battle.EnemyCritBuffRounds > 0 {
 		battle.EnemyCritBuffRounds--
+	}
+	// 81 - 必中回合数递减
+	if battle.PlayerMustHitRounds > 0 {
+		battle.PlayerMustHitRounds--
+	}
+	if battle.EnemyMustHitRounds > 0 {
+		battle.EnemyMustHitRounds--
+	}
+	// 1635 - 誓言之约：倒计时到 0 时回满体力
+	if battle.PlayerDelayedFullHealRounds > 0 {
+		battle.PlayerDelayedFullHealRounds--
+		if battle.PlayerDelayedFullHealRounds == 0 && battle.PlayerHP > 0 {
+			battle.PlayerHP = battle.PlayerMaxHP
+		}
+	}
+	if battle.EnemyDelayedFullHealRounds > 0 {
+		battle.EnemyDelayedFullHealRounds--
+		if battle.EnemyDelayedFullHealRounds == 0 && battle.EnemyHP > 0 {
+			battle.EnemyHP = battle.EnemyMaxHP
+		}
+	}
+	// 439 - 若自身处于能力下降或异常则对手本回合受到 m 点固定伤害
+	if battle.PlayerDealFixedDotWhenWeakRounds > 0 {
+		playerWeak := false
+		for i := 0; i < 6; i++ {
+			if battle.PlayerBattleLv[i] < 0 {
+				playerWeak = true
+				break
+			}
+		}
+		if !playerWeak {
+			for i := 0; i < 20; i++ {
+				if battle.PlayerStatus[i] > 0 {
+					playerWeak = true
+					break
+				}
+			}
+		}
+		if playerWeak && battle.PlayerDealFixedDotWhenWeakDamage > 0 && battle.EnemyHP > 0 {
+			d := battle.PlayerDealFixedDotWhenWeakDamage
+			if d > battle.EnemyHP {
+				d = battle.EnemyHP
+			}
+			battle.EnemyHP -= d
+		}
+		battle.PlayerDealFixedDotWhenWeakRounds--
+	}
+	if battle.EnemyDealFixedDotWhenWeakRounds > 0 {
+		enemyWeak := false
+		for i := 0; i < 6; i++ {
+			if battle.EnemyBattleLv[i] < 0 {
+				enemyWeak = true
+				break
+			}
+		}
+		if !enemyWeak {
+			for i := 0; i < 20; i++ {
+				if battle.EnemyStatus[i] > 0 {
+					enemyWeak = true
+					break
+				}
+			}
+		}
+		if enemyWeak && battle.EnemyDealFixedDotWhenWeakDamage > 0 && battle.PlayerHP > 0 {
+			d := battle.EnemyDealFixedDotWhenWeakDamage
+			if d > battle.PlayerHP {
+				d = battle.PlayerHP
+			}
+			battle.PlayerHP -= d
+		}
+		battle.EnemyDealFixedDotWhenWeakRounds--
+	}
+	// 448 - 每回合对手全能力降低 stages 级
+	if battle.EnemyAllStatDropRounds > 0 && !sptboss.IsStatDropImmune(battle.EnemyID) {
+		for i := 0; i < 6; i++ {
+			cur := int(battle.EnemyBattleLv[i])
+			cur += int(battle.EnemyAllStatDropStages)
+			if cur < -6 {
+				cur = -6
+			}
+			battle.EnemyBattleLv[i] = int8(cur)
+		}
+		battle.EnemyAllStatDropRounds--
+	}
+	if battle.PlayerAllStatDropRounds > 0 {
+		for i := 0; i < 6; i++ {
+			cur := int(battle.PlayerBattleLv[i])
+			cur += int(battle.PlayerAllStatDropStages)
+			if cur < -6 {
+				cur = -6
+			}
+			battle.PlayerBattleLv[i] = int8(cur)
+		}
+		battle.PlayerAllStatDropRounds--
+	}
+	// 478 - 对手属性技能无效回合数递减
+	if battle.EnemyStatusSkillInvalidRounds > 0 {
+		battle.EnemyStatusSkillInvalidRounds--
+	}
+	if battle.PlayerStatusSkillInvalidRounds > 0 {
+		battle.PlayerStatusSkillInvalidRounds--
+	}
+	// 21 - 反弹伤害回合数递减
+	if battle.PlayerReflectDamageRounds > 0 {
+		battle.PlayerReflectDamageRounds--
+	}
+	if battle.EnemyReflectDamageRounds > 0 {
+		battle.EnemyReflectDamageRounds--
+	}
+	// 32 - 暴击率增加回合数递减
+	if battle.PlayerCritRateBonusRounds > 0 {
+		battle.PlayerCritRateBonusRounds--
+	}
+	if battle.EnemyCritRateBonusRounds > 0 {
+		battle.EnemyCritRateBonusRounds--
+	}
+	// 454 - 低血量先制加成回合数递减
+	if battle.PlayerPriorityBonusWhenLowHPRounds > 0 {
+		battle.PlayerPriorityBonusWhenLowHPRounds--
+	}
+	if battle.EnemyPriorityBonusWhenLowHPRounds > 0 {
+		battle.EnemyPriorityBonusWhenLowHPRounds--
+	}
+	// 482 - 先制几率/数值为当回合生效，回合结束清除
+	battle.PlayerPriorityBonusChance = 0
+	battle.PlayerPriorityBonusAmount = 0
+	battle.EnemyPriorityBonusChance = 0
+	battle.EnemyPriorityBonusAmount = 0
+	// 77 - 每次使用技能恢复体力，回合数递减
+	if battle.PlayerRegenPerUseRounds > 0 {
+		battle.PlayerRegenPerUseRounds--
+	}
+	if battle.EnemyRegenPerUseRounds > 0 {
+		battle.EnemyRegenPerUseRounds--
+	}
+	// 78 - 物理攻击 miss，回合数递减
+	if battle.PlayerPhysMissRounds > 0 {
+		battle.PlayerPhysMissRounds--
+	}
+	if battle.EnemyPhysMissRounds > 0 {
+		battle.EnemyPhysMissRounds--
+	}
+	// 83 - 雄性先手/雌性暴击，回合数递减
+	if battle.PlayerMaleFirstStrikeRounds > 0 {
+		battle.PlayerMaleFirstStrikeRounds--
+	}
+	if battle.PlayerFemaleCritRounds > 0 {
+		battle.PlayerFemaleCritRounds--
+	}
+	if battle.EnemyMaleFirstStrikeRounds > 0 {
+		battle.EnemyMaleFirstStrikeRounds--
+	}
+	if battle.EnemyFemaleCritRounds > 0 {
+		battle.EnemyFemaleCritRounds--
+	}
+	// 91 - 状态镜像，回合数递减
+	if battle.PlayerStatusMirrorRounds > 0 {
+		battle.PlayerStatusMirrorRounds--
+	}
+	if battle.EnemyStatusMirrorRounds > 0 {
+		battle.EnemyStatusMirrorRounds--
+	}
+	// 127 - 伤害减半，回合数递减
+	if battle.PlayerDamageHalfRounds > 0 {
+		battle.PlayerDamageHalfRounds--
+	}
+	if battle.EnemyDamageHalfRounds > 0 {
+		battle.EnemyDamageHalfRounds--
+	}
+	// 84 - 受击麻痹，回合数递减
+	if battle.PlayerParalyzeOnPhysHitRounds > 0 {
+		battle.PlayerParalyzeOnPhysHitRounds--
+	}
+	if battle.EnemyParalyzeOnPhysHitRounds > 0 {
+		battle.EnemyParalyzeOnPhysHitRounds--
+	}
+	// 146 - 受物理攻击时中毒，回合数递减
+	if battle.PlayerPoisonOnPhysHitRounds > 0 {
+		battle.PlayerPoisonOnPhysHitRounds--
+	}
+	if battle.EnemyPoisonOnPhysHitRounds > 0 {
+		battle.EnemyPoisonOnPhysHitRounds--
+	}
+	// 150 - 对手每回合防/特防等级 m：回合末设定对手等级并递减
+	if battle.EnemyDefSpDefRounds > 0 {
+		battle.EnemyBattleLv[1] = battle.EnemyDefSpDefStages
+		battle.EnemyBattleLv[3] = battle.EnemyDefSpDefStages
+		battle.EnemyDefSpDefRounds--
+	}
+	if battle.PlayerDefSpDefRounds > 0 {
+		battle.PlayerBattleLv[1] = battle.PlayerDefSpDefStages
+		battle.PlayerBattleLv[3] = battle.PlayerDefSpDefStages
+		battle.PlayerDefSpDefRounds--
+	}
+	// 86 - 属性攻击 miss，回合数递减
+	if battle.PlayerSpecialMissRounds > 0 {
+		battle.PlayerSpecialMissRounds--
+	}
+	if battle.EnemySpecialMissRounds > 0 {
+		battle.EnemySpecialMissRounds--
+	}
+	// 89 - 吸血，回合数递减
+	if battle.PlayerLifestealRounds > 0 {
+		battle.PlayerLifestealRounds--
+	}
+	if battle.EnemyLifestealRounds > 0 {
+		battle.EnemyLifestealRounds--
+	}
+	// 92 - 受击冻伤，回合数递减
+	if battle.PlayerFreezeOnPhysHitRounds > 0 {
+		battle.PlayerFreezeOnPhysHitRounds--
+	}
+	if battle.EnemyFreezeOnPhysHitRounds > 0 {
+		battle.EnemyFreezeOnPhysHitRounds--
+	}
+	// 98 - 对雄性伤害倍率，回合数递减
+	if battle.PlayerMaleDamageMultRounds > 0 {
+		battle.PlayerMaleDamageMultRounds--
+	}
+	if battle.EnemyMaleDamageMultRounds > 0 {
+		battle.EnemyMaleDamageMultRounds--
+	}
+	// 104 - 攻击附带衰弱，回合数递减
+	if battle.PlayerWeaknessOnHitRounds > 0 {
+		battle.PlayerWeaknessOnHitRounds--
+	}
+	if battle.EnemyWeaknessOnHitRounds > 0 {
+		battle.EnemyWeaknessOnHitRounds--
+	}
+	// 108 - 受击烧伤，回合数递减
+	if battle.PlayerBurnOnPhysHitRounds > 0 {
+		battle.PlayerBurnOnPhysHitRounds--
+	}
+	if battle.EnemyBurnOnPhysHitRounds > 0 {
+		battle.EnemyBurnOnPhysHitRounds--
+	}
+	// 109 - 造成伤害附带冻伤，回合数递减
+	if battle.PlayerFreezeOnDealDamageRounds > 0 {
+		battle.PlayerFreezeOnDealDamageRounds--
+	}
+	if battle.EnemyFreezeOnDealDamageRounds > 0 {
+		battle.EnemyFreezeOnDealDamageRounds--
+	}
+	// 463 - 每回合所受伤害减少 m 点，回合数递减
+	if battle.PlayerDamageReducePerRoundRounds > 0 {
+		battle.PlayerDamageReducePerRoundRounds--
+	}
+	if battle.EnemyDamageReducePerRoundRounds > 0 {
+		battle.EnemyDamageReducePerRoundRounds--
+	}
+	// 110 - 受击降能力，回合数递减
+	if battle.PlayerDefendStatDropRounds > 0 {
+		battle.PlayerDefendStatDropRounds--
+	}
+	if battle.EnemyDefendStatDropRounds > 0 {
+		battle.EnemyDefendStatDropRounds--
+	}
+	// 116 - 受击回血，回合数递减
+	if battle.PlayerDefendHealRounds > 0 {
+		battle.PlayerDefendHealRounds--
+	}
+	if battle.EnemyDefendHealRounds > 0 {
+		battle.EnemyDefendHealRounds--
+	}
+	// 117 - 受击疲惫，回合数递减
+	if battle.PlayerDefendFatigueRounds > 0 {
+		battle.PlayerDefendFatigueRounds--
+	}
+	if battle.EnemyDefendFatigueRounds > 0 {
+		battle.EnemyDefendFatigueRounds--
+	}
+	// 125 - 伤害上限，回合数递减
+	if battle.PlayerDamageCapRounds > 0 {
+		battle.PlayerDamageCapRounds--
+	}
+	if battle.EnemyDamageCapRounds > 0 {
+		battle.EnemyDamageCapRounds--
+	}
+	// 126 - n 回合内每回合自身攻击和速度 +m 级，回合末生效并递减
+	if battle.PlayerSpeedBoostRounds > 0 && battle.PlayerSpeedBoostStages != 0 {
+		for _, statIdx := range []int{gameskills.StatAttack, gameskills.StatSpeed} {
+			cur := int(battle.PlayerBattleLv[statIdx]) + int(battle.PlayerSpeedBoostStages)
+			if cur > 6 {
+				cur = 6
+			}
+			if cur < -6 {
+				cur = -6
+			}
+			battle.PlayerBattleLv[statIdx] = int8(cur)
+		}
+		battle.PlayerSpeedBoostRounds--
+	}
+	if battle.EnemySpeedBoostRounds > 0 && battle.EnemySpeedBoostStages != 0 {
+		for _, statIdx := range []int{gameskills.StatAttack, gameskills.StatSpeed} {
+			cur := int(battle.EnemyBattleLv[statIdx]) + int(battle.EnemySpeedBoostStages)
+			if cur > 6 {
+				cur = 6
+			}
+			if cur < -6 {
+				cur = -6
+			}
+			battle.EnemyBattleLv[statIdx] = int8(cur)
+		}
+		battle.EnemySpeedBoostRounds--
+	}
+	// 123 - 受伤加能力，回合数递减
+	if battle.PlayerHurtStatBoostRounds > 0 {
+		battle.PlayerHurtStatBoostRounds--
+	}
+	if battle.EnemyHurtStatBoostRounds > 0 {
+		battle.EnemyHurtStatBoostRounds--
+	}
+	// 128 - 物理伤害转回血，回合数递减
+	if battle.PlayerPhysDmgToHealRounds > 0 {
+		battle.PlayerPhysDmgToHealRounds--
+	}
+	if battle.EnemyPhysDmgToHealRounds > 0 {
+		battle.EnemyPhysDmgToHealRounds--
+	}
+	// 545 - 受到伤害高于 m 则对手获得效果，回合数递减
+	if battle.PlayerReflectStatusWhenHitRounds > 0 {
+		battle.PlayerReflectStatusWhenHitRounds--
+	}
+	if battle.EnemyReflectStatusWhenHitRounds > 0 {
+		battle.EnemyReflectStatusWhenHitRounds--
+	}
+	// 多回合 BUFF 回合数（41 42 44 47 48 50）每回合减 1
+	if battle.PlayerFireResistRounds > 0 {
+		battle.PlayerFireResistRounds--
+	}
+	if battle.PlayerElectricBoostRounds > 0 {
+		battle.PlayerElectricBoostRounds--
+	}
+	if battle.PlayerSpDefHalfRounds > 0 {
+		battle.PlayerSpDefHalfRounds--
+	}
+	if battle.PlayerImmuneStatDropRounds > 0 {
+		battle.PlayerImmuneStatDropRounds--
+	}
+	if battle.PlayerImmuneStatusRounds > 0 {
+		battle.PlayerImmuneStatusRounds--
+	}
+	if battle.PlayerPhysDefHalfRounds > 0 {
+		battle.PlayerPhysDefHalfRounds--
+	}
+	if battle.EnemyFireResistRounds > 0 {
+		battle.EnemyFireResistRounds--
+	}
+	if battle.EnemyElectricBoostRounds > 0 {
+		battle.EnemyElectricBoostRounds--
+	}
+	if battle.EnemySpDefHalfRounds > 0 {
+		battle.EnemySpDefHalfRounds--
+	}
+	if battle.EnemyImmuneStatDropRounds > 0 {
+		battle.EnemyImmuneStatDropRounds--
+	}
+	if battle.EnemyImmuneStatusRounds > 0 {
+		battle.EnemyImmuneStatusRounds--
+	}
+	if battle.EnemyPhysDefHalfRounds > 0 {
+		battle.EnemyPhysDefHalfRounds--
+	}
+	// 45 51 65 68 回合数递减
+	if battle.PlayerCopyDefRounds > 0 {
+		battle.PlayerCopyDefRounds--
+	}
+	if battle.PlayerCopyAtkRounds > 0 {
+		battle.PlayerCopyAtkRounds--
+	}
+	if battle.PlayerElemPowerRounds > 0 {
+		battle.PlayerElemPowerRounds--
+	}
+	if battle.EnemyCopyDefRounds > 0 {
+		battle.EnemyCopyDefRounds--
+	}
+	if battle.EnemyCopyAtkRounds > 0 {
+		battle.EnemyCopyAtkRounds--
+	}
+	if battle.EnemyElemPowerRounds > 0 {
+		battle.EnemyElemPowerRounds--
+	}
+	// 57：每回合回血 maxHP/divisor
+	if battle.PlayerRegenRounds > 0 && battle.PlayerRegenDivisor > 0 && battle.PlayerHP > 0 && battle.PlayerHP < battle.PlayerMaxHP {
+		heal := battle.PlayerMaxHP / uint32(battle.PlayerRegenDivisor)
+		if heal > 0 {
+			battle.PlayerHP += heal
+			if battle.PlayerHP > battle.PlayerMaxHP {
+				battle.PlayerHP = battle.PlayerMaxHP
+			}
+		}
+		battle.PlayerRegenRounds--
+	}
+	if battle.EnemyRegenRounds > 0 && battle.EnemyRegenDivisor > 0 && battle.EnemyHP > 0 && battle.EnemyHP < battle.EnemyMaxHP {
+		heal := battle.EnemyMaxHP / uint32(battle.EnemyRegenDivisor)
+		if heal > 0 {
+			battle.EnemyHP += heal
+			if battle.EnemyHP > battle.EnemyMaxHP {
+				battle.EnemyHP = battle.EnemyMaxHP
+			}
+		}
+		battle.EnemyRegenRounds--
+	}
+	// 52 53 54 55 56 69 73 回合数递减
+	if battle.PlayerEvasionRounds > 0 {
+		battle.PlayerEvasionRounds--
+	}
+	if battle.PlayerDamageMultRounds > 0 {
+		battle.PlayerDamageMultRounds--
+	}
+	if battle.PlayerDamageReductRounds > 0 {
+		battle.PlayerDamageReductRounds--
+	}
+	if battle.PlayerTypeSwapRounds > 0 {
+		battle.PlayerTypeSwapRounds--
+	}
+	if battle.PlayerTypeCopyRounds > 0 {
+		battle.PlayerTypeCopyRounds--
+	}
+	if battle.PlayerPotionReverseRounds > 0 {
+		battle.PlayerPotionReverseRounds--
+	}
+	if battle.PlayerFirstStrikeReflectRounds > 0 {
+		battle.PlayerFirstStrikeReflectRounds--
+		if battle.PlayerFirstStrikeReflectRounds == 0 {
+			battle.PlayerFirstStrikeReflectActive = false
+		}
+	}
+	if battle.EnemyEvasionRounds > 0 {
+		battle.EnemyEvasionRounds--
+	}
+	if battle.EnemyDamageMultRounds > 0 {
+		battle.EnemyDamageMultRounds--
+	}
+	if battle.EnemyDamageReductRounds > 0 {
+		battle.EnemyDamageReductRounds--
+	}
+	if battle.EnemyTypeSwapRounds > 0 {
+		battle.EnemyTypeSwapRounds--
+	}
+	if battle.EnemyTypeCopyRounds > 0 {
+		battle.EnemyTypeCopyRounds--
+	}
+	if battle.EnemyPotionReverseRounds > 0 {
+		battle.EnemyPotionReverseRounds--
+	}
+	if battle.EnemyFirstStrikeReflectRounds > 0 {
+		battle.EnemyFirstStrikeReflectRounds--
+		if battle.EnemyFirstStrikeReflectRounds == 0 {
+			battle.EnemyFirstStrikeReflectActive = false
+		}
+	}
+	// 62：镇魂歌，n 回合后若己方存活则对方死亡
+	if battle.PlayerDestinyBondRounds > 0 {
+		battle.PlayerDestinyBondRounds--
+		if battle.PlayerDestinyBondRounds == 0 && battle.PlayerHP > 0 {
+			battle.EnemyHP = 0
+		}
+	}
+	if battle.EnemyDestinyBondRounds > 0 {
+		battle.EnemyDestinyBondRounds--
+		if battle.EnemyDestinyBondRounds == 0 && battle.EnemyHP > 0 {
+			battle.PlayerHP = 0
+		}
 	}
 
 	// 在构建 2505 之前统一钳位双方 HP，确保不会出现 HP > MaxHP 导致前端血条溢出。
@@ -10374,6 +15499,45 @@ func handleChangePet(ctx *gameserver.HandlerContext) {
 		// 切换精灵时重置我方异常状态和强化弱化（新精灵上场为干净状态）；敌方/野生精灵的 status 和 battleLv 不重置
 		battle.PlayerStatus = [20]byte{}
 		battle.PlayerBattleLv = [6]int8{}
+		// 59 - 牺牲强化下一只：如果上一只精灵有牺牲强化效果且被击败，给新精灵应用强化
+		if playerWasDead && battle.PlayerSacrificeBuffActive {
+			for i := 0; i < 6; i++ {
+				if battle.PlayerSacrificeBuffStats[i] > 0 {
+					cur := int(battle.PlayerBattleLv[i])
+					cur += int(battle.PlayerSacrificeBuffStats[i])
+					if cur > 6 {
+						cur = 6
+					}
+					battle.PlayerBattleLv[i] = int8(cur)
+				}
+			}
+			// 应用后清除牺牲强化标记
+			battle.PlayerSacrificeBuffActive = false
+			for i := 0; i < 6; i++ {
+				battle.PlayerSacrificeBuffStats[i] = 0
+			}
+		}
+		// 71 - 牺牲暴击：自己牺牲(体力降到0), 使下一只出战精灵在前两回合内必定致命一击
+		if playerWasDead && battle.PlayerSacrificeCritActive {
+			battle.PlayerCritBuffRounds = 2
+			battle.PlayerSacrificeCritActive = false
+		}
+		// 67 - 击败减对方下只最大HP：减少新精灵的最大体力1/n
+		if battle.PlayerKillReduceMaxHpDivisor > 0 {
+			reduceAmount := battle.PlayerMaxHP / uint32(battle.PlayerKillReduceMaxHpDivisor)
+			if reduceAmount > 0 && battle.PlayerMaxHP > reduceAmount {
+				battle.PlayerMaxHP -= reduceAmount
+				if battle.PlayerHP > battle.PlayerMaxHP {
+					battle.PlayerHP = battle.PlayerMaxHP
+				}
+			}
+			battle.PlayerKillReduceMaxHpDivisor = 0
+		}
+		// 144 - 牺牲全部体力使下一只 n 回合免疫异常
+		if battle.PlayerSacrificeImmuneStatusRounds > 0 {
+			battle.PlayerImmuneStatusRounds = battle.PlayerSacrificeImmuneStatusRounds
+			battle.PlayerSacrificeImmuneStatusRounds = 0
+		}
 		// 同时更新当前血量与最大血量，保证后续 2405 使用正确的 HP
 		hp := petStats.HP
 		if hp < 0 {
@@ -11324,7 +16488,6 @@ func handleNonoFollowOrHoom(ctx *gameserver.HandlerContext) {
 		listBody := buildMapPlayerListForMap(ctx.GameServer, user.MapID)
 		ctx.GameServer.BroadcastToMap(user.MapID, 0, 2003, listBody)
 		if action == 1 && len(body) >= 36 {
-			// 跟随时向同图其他玩家补发 9019，布局与 FollowCmdListener 一致，superStage 在 [4:8]
 			bodyForOthers := make([]byte, 36)
 			copy(bodyForOthers, body)
 			binary.BigEndian.PutUint32(bodyForOthers[4:8], uint32(user.Nono.SuperNono))

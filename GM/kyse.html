@@ -126,6 +126,7 @@
                 <div class="kyse-nav-item" data-section="fightlevel" onclick="showSection('fightlevel'); loadFightLevel();">勇者之塔</div>
                 <div class="kyse-nav-item" data-section="darkportal" onclick="showSection('darkportal'); loadDarkPortal();">暗黑武斗场</div>
                 <div class="kyse-nav-item" data-section="sptboss" onclick="showSection('sptboss'); loadSPTBoss();">SPT BOSS</div>
+                <div class="kyse-nav-item" data-section="boss_effect" onclick="showSection('boss_effect'); loadBossEffect();">BOSS 多效果</div>
                 <div class="kyse-nav-item" data-section="maps" onclick="showSection('maps')">地图管理</div>
             </nav>
         </aside>
@@ -802,6 +803,34 @@
                 </div>
             </div>
         </div>
+
+        <!-- BOSS 多效果配置 -->
+        <div id="boss_effect" class="content-section">
+            <div class="page-block">
+                <div class="page-block-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <span>BOSS/特殊多效果配置（691/700/976/1470 等）</span>
+                    <button type="button" class="kyse-btn kyse-btn-primary" onclick="saveBossEffect()">保存配置</button>
+                </div>
+                <div class="page-block-body">
+                    <p class="weights-desc mb-3">配置 BOSS 技能多效果 ID 的数值（固定伤害、威力百分比、回合数、第二参数、先制加值）。保存到数据库表 gm_boss_effect_config，战斗中会读取此处配置应用（如 976 简/极 的固定伤害）。</p>
+                    <div class="table-responsive">
+                        <table class="weights-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:90px;">效果ID</th>
+                                    <th style="width:100px;">固定伤害</th>
+                                    <th style="width:100px;">威力%</th>
+                                    <th style="width:80px;">回合</th>
+                                    <th style="width:100px;">第二参数</th>
+                                    <th style="width:100px;">先制加值</th>
+                                </tr>
+                            </thead>
+                            <tbody id="bossEffectList"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
         
         <!-- 地图管理 -->
         <div id="maps" class="content-section">
@@ -1289,7 +1318,7 @@
             loadItemDatabase();  // 预加载道具列表，供下拉与搜索使用
         };
         
-        const sectionTitles = { dashboard: '仪表盘', users: '用户管理', pets: '精灵管理', gacha: '扭蛋机', weights: '权重管理', buffs: 'BUFF / 奖励', fusion: '精灵融合管理', freshfight: '试炼之塔', fightlevel: '勇者之塔', darkportal: '暗黑武斗场', sptboss: 'SPT BOSS', maps: '地图管理' };
+        const sectionTitles = { dashboard: '仪表盘', users: '用户管理', pets: '精灵管理', gacha: '扭蛋机', weights: '权重管理', buffs: 'BUFF / 奖励', fusion: '精灵融合管理', freshfight: '试炼之塔', fightlevel: '勇者之塔', darkportal: '暗黑武斗场', sptboss: 'SPT BOSS', boss_effect: 'BOSS 多效果', maps: '地图管理' };
         function showSection(section) {
             document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
             document.querySelectorAll('.kyse-nav-item').forEach(n => n.classList.remove('active'));
@@ -1306,6 +1335,7 @@
             if(section === 'fusion') loadFusion();
             if(section === 'maps') loadMapConfig();
             if(section === 'fightlevel') loadFightLevel();
+            if(section === 'boss_effect') loadBossEffect();
         }
         function checkConnection() {
             fetch(API + '/gm/server/status').then(r => r.json()).then(d => {
@@ -3464,6 +3494,72 @@
                 const data = await res.json();
                 alert(data.success ? '保存成功' : ('保存失败: ' + (data.message || '')));
                 if (data.success) loadSPTBoss();
+            } catch (e) {
+                alert('保存失败: ' + e.message);
+            }
+        }
+
+        const BOSS_EFFECT_IDS = ['691', '700', '773', '935', '976', '1083', '1211', '1248', '1257', '1470', '1603', '1605', '1850', '1925', '2236', '2237'];
+        async function loadBossEffect() {
+            try {
+                const res = await fetch(API + '/gm/boss_effect/config');
+                const data = await res.json();
+                if (!data.success) {
+                    alert('加载 BOSS 多效果配置失败: ' + (data.message || ''));
+                    return;
+                }
+                const effects = (data.data && data.data.effects) ? data.data.effects : {};
+                const tbody = document.getElementById('bossEffectList');
+                if (!tbody) return;
+                const ids = [...new Set([...BOSS_EFFECT_IDS, ...Object.keys(effects)])].sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+                tbody.innerHTML = '';
+                ids.forEach(eid => {
+                    const p = effects[eid] || {};
+                    const tr = document.createElement('tr');
+                    tr.innerHTML =
+                        '<td>' + eid + '</td>' +
+                        '<td><input type="number" class="kyse-input" data-eid="' + eid + '" data-field="fixedDamage" value="' + (p.fixedDamage || 0) + '" min="0"></td>' +
+                        '<td><input type="number" class="kyse-input" data-eid="' + eid + '" data-field="powerPercent" value="' + (p.powerPercent || 0) + '" min="0"></td>' +
+                        '<td><input type="number" class="kyse-input" data-eid="' + eid + '" data-field="rounds" value="' + (p.rounds || 0) + '" min="0"></td>' +
+                        '<td><input type="number" class="kyse-input" data-eid="' + eid + '" data-field="secondParam" value="' + (p.secondParam || 0) + '"></td>' +
+                        '<td><input type="number" class="kyse-input" data-eid="' + eid + '" data-field="priorityBonus" value="' + (p.priorityBonus || 0) + '"></td>';
+                    tbody.appendChild(tr);
+                });
+            } catch (e) {
+                alert('加载失败: ' + e.message);
+            }
+        }
+        async function saveBossEffect() {
+            const tbody = document.getElementById('bossEffectList');
+            if (!tbody) return;
+            const effects = {};
+            tbody.querySelectorAll('tr').forEach(tr => {
+                const eid = tr.querySelector('[data-field="fixedDamage"]');
+                if (!eid) return;
+                const id = eid.getAttribute('data-eid');
+                const get = (field, def) => {
+                    const el = tr.querySelector('[data-field="' + field + '"]');
+                    if (!el) return def;
+                    const v = parseInt(el.value, 10);
+                    return isNaN(v) ? def : v;
+                };
+                effects[id] = {
+                    fixedDamage: get('fixedDamage', 0),
+                    powerPercent: get('powerPercent', 0),
+                    rounds: get('rounds', 0),
+                    secondParam: get('secondParam', 0),
+                    priorityBonus: get('priorityBonus', 0)
+                };
+            });
+            try {
+                const res = await fetch(API + '/gm/boss_effect/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data: { effects: effects } })
+                });
+                const data = await res.json();
+                alert(data.success ? '保存成功' : ('保存失败: ' + (data.message || '')));
+                if (data.success) loadBossEffect();
             } catch (e) {
                 alert('保存失败: ' + e.message);
             }
